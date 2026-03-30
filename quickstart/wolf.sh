@@ -61,10 +61,11 @@ detect_environment() {
     command -v incus &>/dev/null     && { echo "incus"; return; }
     [[ -f /etc/unraid-version ]]     && { echo "unraid"; return; }
     command -v midclt &>/dev/null    && { echo "truenas"; return; }
+    [[ -f /etc/NIXOS ]]             && { echo "nixos"; return; }
     command -v podman &>/dev/null    && { echo "podman"; return; }
     command -v docker &>/dev/null    && { echo "docker"; return; }
 
-    echo "ERROR: Could not detect environment. Install Proxmox, LXC, Podman, Docker, or run on Unraid/TrueNAS." >&2
+    echo "ERROR: Could not detect environment. Install Proxmox, LXC, Podman, Docker, or run on Unraid/TrueNAS/NixOS." >&2
     exit 1
 }
 
@@ -81,6 +82,7 @@ case "$ENVIRONMENT" in
     incus)   NEEDED_SCRIPTS=(common.sh incus.sh configure.sh) ;;
     unraid)  NEEDED_SCRIPTS=(common.sh unraid.sh) ;;
     truenas) NEEDED_SCRIPTS=(common.sh truenas.sh) ;;
+    nixos)   NEEDED_SCRIPTS=(common.sh nixos.sh) ;;
     podman)  NEEDED_SCRIPTS=(common.sh podman.sh) ;;
     docker)  NEEDED_SCRIPTS=(common.sh docker.sh) ;;
 esac
@@ -101,6 +103,7 @@ case "$ENVIRONMENT" in
     incus)   source "${SCRIPT_DIR}/incus.sh";    incus_main "$@" ;;
     unraid)  source "${SCRIPT_DIR}/unraid.sh";   unraid_main "$@" ;;
     truenas) source "${SCRIPT_DIR}/truenas.sh";  truenas_main "$@" ;;
+    nixos)   source "${SCRIPT_DIR}/nixos.sh";    nixos_main "$@" ;;
     podman)  source "${SCRIPT_DIR}/podman.sh";   podman_main "$@" ;;
     docker)  source "${SCRIPT_DIR}/docker.sh";   docker_main "$@" ;;
 esac

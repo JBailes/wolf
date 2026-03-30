@@ -18,10 +18,11 @@ This directory contains `wolf.sh`, a single self-contained script that turns a L
 |---|---|
 | **Proxmox** (a server hypervisor) | Creates a container, passes your GPU into it, installs Docker, and deploys Wolf + Wolf Den inside |
 | **LXC / Incus** (Linux container tools) | Same as Proxmox but using standalone LXC tools or Incus instead |
+| **Unraid** (NAS server OS) | Deploys Wolf + Wolf Den via Docker Compose with persistent appdata paths and boot-persistent udev rules |
 | **Docker** (on any Linux machine) | Deploys Wolf + Wolf Den directly using Docker Compose |
 | **Podman** (on any Linux machine) | Deploys Wolf + Wolf Den as systemd services using Podman Quadlets |
 
-You don't need to choose -- the script figures out which one you have and does the right thing. It checks in this order: Proxmox, LXC/Incus, Podman, Docker.
+You don't need to choose -- the script figures out which one you have and does the right thing. It checks in this order: Proxmox, LXC/Incus, Unraid, Podman, Docker.
 
 > **What's a "container"?** On Proxmox, LXC, and Incus, the script creates a lightweight virtual environment (a "container") on your server to run Wolf in. Think of it as a mini computer running inside your computer. Your GPU is shared with this container so Wolf can use it for gaming. On Docker and Podman, Wolf runs directly on your machine without this extra layer.
 
@@ -34,6 +35,7 @@ After setup, **Steam** is pre-configured as a launchable app in Moonlight. You c
 - **A Linux machine with a GPU** -- this can be:
   - A Proxmox VE server (version 7.x or 8.x)
   - Any Linux machine with LXC tools (`lxc-create`) or Incus installed
+  - An Unraid server (6.x or 7.x) with Docker enabled
   - Any Linux machine with Docker installed
   - Any Linux machine with Podman installed
 - **GPU drivers installed and working**:
@@ -131,6 +133,7 @@ All options are optional. The script auto-detects sensible defaults for everythi
 | `--cidr <bits>` | Subnet size (you probably don't need to change this) | Auto: detected from your network | Proxmox |
 | `--storage <name>` | Which Proxmox storage pool to use | Auto: asks you if there are multiple | Proxmox |
 | `--render-node <path>` | Which GPU to use (e.g. `/dev/dri/renderD128`) | Auto: you choose if there are multiple | All |
+| `--appdata <path>` | Where to store Wolf's config and data | `/mnt/user/appdata/wolf` | Unraid |
 
 ### Examples
 
@@ -158,6 +161,12 @@ Proxmox -- give the container more resources for demanding games:
 ./wolf.sh --cpu 8 --ram 8192 --disk 32
 ```
 
+Unraid -- use a custom appdata path:
+
+```bash
+./wolf.sh --appdata /mnt/cache/appdata/wolf
+```
+
 Use a specific GPU (skip the selection prompt):
 
 ```bash
@@ -183,6 +192,20 @@ Use a specific GPU (skip the selection prompt):
 - An Incus container (default name: `wolf`)
 - GPU devices added via `incus config device add`
 - Inside the container: Docker, Wolf, and Wolf Den (see Docker section below)
+
+### Unraid
+
+| Path | What it is |
+|---|---|
+| `/mnt/user/appdata/wolf/docker-compose.yml` | Configuration file that tells Docker how to run Wolf + Wolf Den |
+| `/mnt/user/appdata/wolf/cfg/config.toml` | Wolf configuration (apps, codec support) |
+| `/mnt/user/appdata/wolf/steam/` | Persistent storage for Steam (game installs, saves) |
+| `/mnt/user/appdata/wolf/wolf-den/` | Wolf Den state |
+| `/mnt/user/appdata/wolf/covers/` | App cover art images |
+| `/boot/config/wolf-virtual-inputs.rules` | Udev rules for virtual input (persistent across reboots) |
+| `/boot/config/go` | Modified to restore udev rules and auto-start Wolf on boot |
+
+> **Note:** Unraid's root filesystem is a tmpfs (it runs from a USB flash drive), so all persistent data is stored in `/mnt/user/appdata/` and `/boot/config/`. The `--appdata` flag lets you change the appdata location if needed.
 
 ### Docker
 
@@ -270,6 +293,28 @@ podman pull ghcr.io/games-on-whales/wolf-den:stable
 systemctl restart wolf wolf-den
 ```
 
+### Unraid
+
+```bash
+cd /mnt/user/appdata/wolf
+
+# Check if Wolf is running
+docker compose ps
+
+# View logs (press Ctrl+C to stop watching)
+docker compose logs -f
+
+# Stop Wolf
+docker compose stop
+
+# Restart Wolf
+docker compose restart
+
+# Update to the latest version
+docker compose pull
+docker compose up -d
+```
+
 ### Proxmox
 
 First enter the container, then use Docker commands:
@@ -314,6 +359,7 @@ docker compose ps
 The script is safe to re-run. It won't break anything if you run it again:
 
 - **Proxmox / LXC / Incus**: If the container already exists, it skips creation and reconfigures GPU passthrough
+- **Unraid**: If the compose file exists, it updates and restarts the services. Boot persistence entries in `/boot/config/go` are only added once.
 - **Docker**: If the compose file exists, it updates and restarts the services
 - **Podman**: If the Quadlet file exists, it overwrites it with the latest configuration
 
@@ -329,9 +375,13 @@ ls /dev/dri/renderD*
 
 If nothing shows up, your GPU driver isn't installed or loaded. Search for how to install your GPU driver on your Linux distribution.
 
+### Unraid: "Docker is not available"
+
+Docker must be enabled in the Unraid web UI. Go to **Settings > Docker** and set **Enable Docker** to **Yes**, then click **Apply**. Once Docker is running, re-run the script.
+
 ### "Could not detect environment"
 
-The script couldn't find Proxmox, LXC, Podman, or Docker. You need at least one of these installed:
+The script couldn't find Proxmox, LXC, Unraid, Podman, or Docker. You need at least one of these installed:
 
 - **Docker**: Follow the [official Docker install guide](https://docs.docker.com/engine/install/)
 - **Podman**: Install with your package manager (e.g. `apt install podman` on Debian/Ubuntu)
@@ -385,6 +435,18 @@ podman volume rm wolf-socket
 rm -rf /etc/wolf
 rm /etc/udev/rules.d/85-wolf-virtual-inputs.rules
 ```
+
+### Unraid
+
+```bash
+cd /mnt/user/appdata/wolf
+docker compose down
+rm -rf /mnt/user/appdata/wolf
+rm /boot/config/wolf-virtual-inputs.rules
+rm /etc/udev/rules.d/85-wolf-virtual-inputs.rules
+```
+
+Then edit `/boot/config/go` and remove the lines between `# Wolf udev rules` and `# Wolf docker-compose` (inclusive), plus the `docker compose ... up -d` line that follows.
 
 ### Proxmox
 

@@ -6,6 +6,8 @@
 #               inside, deploys Wolf + Wolf Den via docker-compose
 #   - LXC:     Creates a GPU-passthrough LXC via lxc-create, same as above
 #   - Incus:   Creates a GPU-passthrough container via Incus, same as above
+#   - Unraid:  Deploys Wolf + Wolf Den via docker-compose with persistent
+#              appdata paths and boot-persistent udev rules
 #   - Podman:  Installs a Podman Quadlet (systemd-managed container)
 #   - Docker:  Deploys Wolf + Wolf Den via docker-compose
 #
@@ -26,6 +28,7 @@
 #   --cidr <bits>          Subnet prefix length   (Proxmox; default: auto)
 #   --storage <name>       Proxmox storage name   (Proxmox; default: prompt)
 #   --render-node <path>   GPU render device      (all; default: auto-detected)
+#   --appdata <path>       App data directory      (Unraid; default: /mnt/user/appdata/wolf)
 
 set -euo pipefail
 
@@ -42,6 +45,7 @@ CT_GW="auto"
 CT_CIDR="auto"
 CT_STORAGE="auto"
 LXC_NAME="wolf"
+APPDATA="/mnt/user/appdata/wolf"
 
 IMAGE_STORAGE="${IMAGE_STORAGE:-isos}"
 TEMPLATE="${TEMPLATE:-${IMAGE_STORAGE}:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst}"
@@ -69,6 +73,7 @@ parse_args() {
             --storage)     CT_STORAGE="${2:?--storage requires a value}"; shift 2 ;;
             --name)        LXC_NAME="${2:?--name requires a value}"; shift 2 ;;
             --render-node) SELECTED_RENDER_NODE="${2:?--render-node requires a value}"; shift 2 ;;
+            --appdata)     APPDATA="${2:?--appdata requires a value}"; shift 2 ;;
             *)             shift ;;
         esac
     done
@@ -535,6 +540,118 @@ volumes:
 YAML
 }
 
+# Write compose file with custom paths.
+# Usage: write_compose_paths <vendor> <render_node> <wolf_cfg> <wolf_den> <covers> <steam> <compose_dir>
+write_compose_paths() {
+    local vendor="$1" render_node="$2"
+    local wolf_cfg="$3" wolf_den="$4" covers="$5" steam="$6" compose_dir="$7"
+
+    local compose_file="${compose_dir}/docker-compose.yml"
+
+    case "$vendor" in
+        NVIDIA)
+            cat > "$compose_file" <<YAML
+services:
+  wolf:
+    image: ghcr.io/games-on-whales/wolf:stable
+    environment:
+      - WOLF_RENDER_NODE=${render_node}
+      - NVIDIA_DRIVER_VOLUME_NAME=nvidia-driver-vol
+      - XDG_RUNTIME_DIR=/tmp/sockets
+      - WOLF_CFG_FILE=/etc/wolf/cfg/config.toml
+      - WOLF_DOCKER_SOCKET=/var/run/docker.sock
+    volumes:
+      - ${wolf_cfg}:/etc/wolf/cfg:rw
+      - ${steam}:/etc/wolf/steam:rw
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+      - /dev/:/dev/:rw
+      - /run/udev:/run/udev:rw
+      - nvidia-driver-vol:/usr/nvidia:rw
+      - wolf-socket:/tmp/sockets
+    devices:
+      - /dev/dri
+      - /dev/uinput
+      - /dev/uhid
+      - /dev/nvidia-uvm
+      - /dev/nvidia-uvm-tools
+      - /dev/nvidia-caps/nvidia-cap1
+      - /dev/nvidia-caps/nvidia-cap2
+      - /dev/nvidiactl
+      - /dev/nvidia0
+      - /dev/nvidia-modeset
+    device_cgroup_rules:
+      - 'c 13:* rmw'
+    network_mode: host
+    restart: unless-stopped
+
+  wolf-den:
+    image: ghcr.io/games-on-whales/wolf-den:stable
+    environment:
+      - WOLF_SOCKET_PATH=/tmp/sockets/wolf.sock
+    volumes:
+      - wolf-socket:/tmp/sockets
+      - ${wolf_den}:/app/wolf-den
+      - ${covers}:/etc/wolf/covers
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    depends_on:
+      - wolf
+
+volumes:
+  nvidia-driver-vol:
+    external: true
+  wolf-socket:
+YAML
+            ;;
+        AMD|Intel)
+            cat > "$compose_file" <<YAML
+services:
+  wolf:
+    image: ghcr.io/games-on-whales/wolf:stable
+    environment:
+      - WOLF_RENDER_NODE=${render_node}
+      - XDG_RUNTIME_DIR=/tmp/sockets
+      - WOLF_CFG_FILE=/etc/wolf/cfg/config.toml
+      - WOLF_DOCKER_SOCKET=/var/run/docker.sock
+    volumes:
+      - ${wolf_cfg}:/etc/wolf/cfg:rw
+      - ${steam}:/etc/wolf/steam:rw
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+      - /dev/:/dev/:rw
+      - /run/udev:/run/udev:rw
+      - wolf-socket:/tmp/sockets
+    device_cgroup_rules:
+      - 'c 13:* rmw'
+    devices:
+      - /dev/dri
+      - /dev/uinput
+      - /dev/uhid
+    network_mode: host
+    restart: unless-stopped
+
+  wolf-den:
+    image: ghcr.io/games-on-whales/wolf-den:stable
+    environment:
+      - WOLF_SOCKET_PATH=/tmp/sockets/wolf.sock
+    volumes:
+      - wolf-socket:/tmp/sockets
+      - ${wolf_den}:/app/wolf-den
+      - ${covers}:/etc/wolf/covers
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    depends_on:
+      - wolf
+
+volumes:
+  wolf-socket:
+YAML
+            ;;
+        *) err "Unsupported GPU vendor: $vendor" ;;
+    esac
+}
+
 # =========================================================================
 # Container-side configuration (runs inside an LXC via --configure)
 # =========================================================================
@@ -965,6 +1082,169 @@ EOF
 }
 
 # =========================================================================
+# Unraid deployment
+# =========================================================================
+
+# Install udev rules persistently on Unraid. The root filesystem is a tmpfs,
+# so rules written to /etc/ are lost on reboot. Unraid's convention is to
+# store custom udev rules in /boot/config/ and restore them via /boot/config/go.
+install_udev_rules_unraid() {
+    local rules_src="/boot/config/wolf-virtual-inputs.rules"
+    local rules_dst="/etc/udev/rules.d/85-wolf-virtual-inputs.rules"
+
+    info "Setting up persistent udev rules for virtual input"
+
+    # Write the canonical copy to the flash drive
+    cat > "$rules_src" <<'UDEV'
+KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput", TAG+="uaccess"
+KERNEL=="uhid", GROUP="input", MODE="0660", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{name}=="Wolf PS5 (virtual) pad", GROUP="input", MODE="0660", ENV{ID_SEAT}="seat9"
+SUBSYSTEMS=="input", ATTRS{name}=="Wolf X-Box One (virtual) pad", MODE="0660", ENV{ID_SEAT}="seat9"
+SUBSYSTEMS=="input", ATTRS{name}=="Wolf PS5 (virtual) pad", MODE="0660", ENV{ID_SEAT}="seat9"
+SUBSYSTEMS=="input", ATTRS{name}=="Wolf gamepad (virtual) motion sensors", MODE="0660", ENV{ID_SEAT}="seat9"
+SUBSYSTEMS=="input", ATTRS{name}=="Wolf Nintendo (virtual) pad", MODE="0660", ENV{ID_SEAT}="seat9"
+UDEV
+
+    # Copy into the live tmpfs so it takes effect immediately
+    cp "$rules_src" "$rules_dst"
+    udevadm control --reload-rules 2>/dev/null || true
+    udevadm trigger 2>/dev/null || true
+
+    # Ensure /boot/config/go restores the rules on every boot.
+    # The go script runs at the end of Unraid's boot process.
+    local go="/boot/config/go"
+    local marker="# Wolf udev rules"
+    if ! grep -qF "$marker" "$go" 2>/dev/null; then
+        info "Adding udev restore to /boot/config/go"
+        cat >> "$go" <<EOF
+
+$marker
+cp ${rules_src} ${rules_dst}
+udevadm control --reload-rules 2>/dev/null || true
+udevadm trigger 2>/dev/null || true
+EOF
+    fi
+}
+
+# Write Wolf config.toml for Unraid (same content, different path).
+write_wolf_config_unraid() {
+    local cfg_dir="$1"
+
+    if [[ -f "${cfg_dir}/config.toml" ]]; then
+        info "Wolf config already exists, skipping"
+        return
+    fi
+
+    info "Writing Wolf config with Steam"
+    cat > "${cfg_dir}/config.toml" <<'TOML'
+hostname = "Wolf"
+support_hevc = true
+support_av1 = true
+
+[[profiles]]
+uid = "default"
+
+[[profiles.apps]]
+title = "Steam"
+start_virtual_compositor = true
+
+[profiles.apps.runner]
+type = "docker"
+name = "WolfSteam"
+image = "ghcr.io/games-on-whales/steam:edge"
+mounts = ["/etc/wolf/steam:/home/retro:rw"]
+env = ["PROTON_LOG=1", "RUN_SWAY=true"]
+TOML
+}
+
+unraid_main() {
+    [[ $EUID -eq 0 ]] || err "Run as root"
+
+    command -v docker &>/dev/null || err "Docker is not available. Enable Docker in Unraid Settings > Docker."
+
+    select_gpu
+
+    local cfg_dir="${APPDATA}/cfg"
+    local wolf_den_dir="${APPDATA}/wolf-den"
+    local covers_dir="${APPDATA}/covers"
+    local steam_dir="${APPDATA}/steam"
+    local compose_dir="${APPDATA}"
+
+    info "Wolf Cloud Gaming Setup (Unraid)"
+    echo "  Appdata: ${APPDATA}"
+    echo "  GPU:     $(selected_gpu_label)"
+    echo "  Node:    ${SELECTED_RENDER_NODE}"
+    echo ""
+
+    install_udev_rules_unraid
+
+    mkdir -p "$cfg_dir" "$wolf_den_dir" "$covers_dir" "$steam_dir"
+
+    write_wolf_config_unraid "$cfg_dir"
+
+    info "Writing docker-compose.yml for ${SELECTED_VENDOR}"
+    write_compose_paths "$SELECTED_VENDOR" "$SELECTED_RENDER_NODE" \
+        "$cfg_dir" "$wolf_den_dir" "$covers_dir" "$steam_dir" "$compose_dir"
+
+    if [[ "$SELECTED_VENDOR" == "NVIDIA" ]]; then
+        detect_nvidia_version
+        build_nvidia_volume docker
+    fi
+
+    info "Pulling and starting Wolf + Wolf Den"
+    docker compose -f "${compose_dir}/docker-compose.yml" pull
+    docker compose -f "${compose_dir}/docker-compose.yml" up -d
+
+    sleep 5
+    if docker compose -f "${compose_dir}/docker-compose.yml" ps --format '{{.Service}} {{.State}}' | grep -q "running"; then
+        info "Services are running"
+    else
+        warn "Some services may not be running yet. Check: docker compose -f ${compose_dir}/docker-compose.yml ps"
+    fi
+
+    # Ensure Wolf starts on boot via /boot/config/go
+    local go="/boot/config/go"
+    local marker="# Wolf docker-compose"
+    if ! grep -qF "$marker" "$go" 2>/dev/null; then
+        info "Adding Wolf auto-start to /boot/config/go"
+        cat >> "$go" <<EOF
+
+$marker
+docker compose -f ${compose_dir}/docker-compose.yml up -d &
+EOF
+    fi
+
+    local ip; ip=$(get_local_ip)
+    cat <<EOF
+
+================================================================
+Wolf cloud gaming is deployed (Unraid).
+
+  Wolf:      streaming on ports 47984-48200 (Moonlight)
+  Wolf Den:  http://${ip}:8080 (web management)
+  Compose:   ${compose_dir}/docker-compose.yml
+  Appdata:   ${APPDATA}
+  GPU:       ${SELECTED_VENDOR} ${SELECTED_NAME} (${SELECTED_DRIVER}) at ${SELECTED_RENDER_NODE}
+
+  Persistence: udev rules and auto-start are saved to
+               /boot/config/go (survives reboots)
+
+To pair with Moonlight:
+  1. Open Wolf Den at http://${ip}:8080 to manage apps and clients
+  2. Open Moonlight and add server: ${ip}
+  3. Enter the pairing PIN shown in Moonlight into Wolf Den
+
+Manage with:
+  cd ${compose_dir}
+  docker compose stop       # stop
+  docker compose restart    # restart
+  docker compose logs -f    # view logs
+  docker compose pull && docker compose up -d   # update
+================================================================
+EOF
+}
+
+# =========================================================================
 # Docker deployment
 # =========================================================================
 
@@ -1028,6 +1308,7 @@ detect_environment() {
     command -v pveversion &>/dev/null && { echo "proxmox"; return; }
     command -v lxc-create &>/dev/null && { echo "lxc"; return; }
     command -v incus &>/dev/null     && { echo "incus"; return; }
+    [[ -f /etc/unraid-version ]]     && { echo "unraid"; return; }
     command -v podman &>/dev/null    && { echo "podman"; return; }
     command -v docker &>/dev/null    && { echo "docker"; return; }
 
@@ -1042,6 +1323,7 @@ case "$ENVIRONMENT" in
     proxmox)   proxmox_main ;;
     lxc)       lxc_main ;;
     incus)     incus_main ;;
+    unraid)    unraid_main ;;
     podman)    podman_main ;;
     docker)    docker_main ;;
 esac

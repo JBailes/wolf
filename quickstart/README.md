@@ -19,10 +19,11 @@ This directory contains `wolf.sh`, a single self-contained script that turns a L
 | **Proxmox** (a server hypervisor) | Creates a container, passes your GPU into it, installs Docker, and deploys Wolf + Wolf Den inside |
 | **LXC / Incus** (Linux container tools) | Same as Proxmox but using standalone LXC tools or Incus instead |
 | **Unraid** (NAS server OS) | Deploys Wolf + Wolf Den via Docker Compose with persistent appdata paths and boot-persistent udev rules |
+| **TrueNAS SCALE** (NAS server OS) | Deploys Wolf + Wolf Den via Docker Compose on a ZFS dataset with update-persistent init scripts |
 | **Docker** (on any Linux machine) | Deploys Wolf + Wolf Den directly using Docker Compose |
 | **Podman** (on any Linux machine) | Deploys Wolf + Wolf Den as systemd services using Podman Quadlets |
 
-You don't need to choose -- the script figures out which one you have and does the right thing. It checks in this order: Proxmox, LXC/Incus, Unraid, Podman, Docker.
+You don't need to choose -- the script figures out which one you have and does the right thing. It checks in this order: Proxmox, LXC/Incus, Unraid, TrueNAS, Podman, Docker.
 
 > **What's a "container"?** On Proxmox, LXC, and Incus, the script creates a lightweight virtual environment (a "container") on your server to run Wolf in. Think of it as a mini computer running inside your computer. Your GPU is shared with this container so Wolf can use it for gaming. On Docker and Podman, Wolf runs directly on your machine without this extra layer.
 
@@ -36,6 +37,7 @@ After setup, **Steam** is pre-configured as a launchable app in Moonlight. You c
   - A Proxmox VE server (version 7.x or 8.x)
   - Any Linux machine with LXC tools (`lxc-create`) or Incus installed
   - An Unraid server (6.x or 7.x) with Docker enabled
+  - A TrueNAS SCALE server (Electric Eel 24.10+) with Docker support
   - Any Linux machine with Docker installed
   - Any Linux machine with Podman installed
 - **GPU drivers installed and working**:
@@ -133,7 +135,8 @@ All options are optional. The script auto-detects sensible defaults for everythi
 | `--cidr <bits>` | Subnet size (you probably don't need to change this) | Auto: detected from your network | Proxmox |
 | `--storage <name>` | Which Proxmox storage pool to use | Auto: asks you if there are multiple | Proxmox |
 | `--render-node <path>` | Which GPU to use (e.g. `/dev/dri/renderD128`) | Auto: you choose if there are multiple | All |
-| `--appdata <path>` | Where to store Wolf's config and data | `/mnt/user/appdata/wolf` | Unraid |
+| `--appdata <path>` | Where to store Wolf's config and data | `/mnt/user/appdata/wolf` (Unraid), `/mnt/<pool>/appdata/wolf` (TrueNAS) | Unraid, TrueNAS |
+| `--pool <name>` | Which ZFS pool to store appdata on | Auto: you choose if there are multiple | TrueNAS |
 
 ### Examples
 
@@ -165,6 +168,12 @@ Unraid -- use a custom appdata path:
 
 ```bash
 ./wolf.sh --appdata /mnt/cache/appdata/wolf
+```
+
+TrueNAS -- specify the pool (skip the selection prompt):
+
+```bash
+./wolf.sh --pool tank
 ```
 
 Use a specific GPU (skip the selection prompt):
@@ -206,6 +215,22 @@ Use a specific GPU (skip the selection prompt):
 | `/boot/config/go` | Modified to restore udev rules and auto-start Wolf on boot |
 
 > **Note:** Unraid's root filesystem is a tmpfs (it runs from a USB flash drive), so all persistent data is stored in `/mnt/user/appdata/` and `/boot/config/`. The `--appdata` flag lets you change the appdata location if needed.
+
+### TrueNAS SCALE
+
+| Path | What it is |
+|---|---|
+| `/mnt/<pool>/appdata/wolf/docker-compose.yml` | Configuration file that tells Docker how to run Wolf + Wolf Den |
+| `/mnt/<pool>/appdata/wolf/cfg/config.toml` | Wolf configuration (apps, codec support) |
+| `/mnt/<pool>/appdata/wolf/steam/` | Persistent storage for Steam (game installs, saves) |
+| `/mnt/<pool>/appdata/wolf/wolf-den/` | Wolf Den state |
+| `/mnt/<pool>/appdata/wolf/covers/` | App cover art images |
+| `/mnt/<pool>/appdata/wolf/wolf-virtual-inputs.rules` | Udev rules source (on ZFS, survives system updates) |
+| `/mnt/<pool>/appdata/wolf/wolf-init.sh` | Boot init script (restores udev rules, starts Wolf) |
+
+> **Note:** TrueNAS SCALE overwrites its system partition on updates, so nothing in `/etc/` persists. All Wolf data lives on a ZFS dataset. The init script is registered with TrueNAS via `midclt` and appears in the TrueNAS UI under System > Advanced > Init/Shutdown Scripts.
+>
+> **TrueNAS CORE (FreeBSD) is not supported** -- this script requires TrueNAS SCALE, which is Linux-based.
 
 ### Docker
 
@@ -315,6 +340,29 @@ docker compose pull
 docker compose up -d
 ```
 
+### TrueNAS SCALE
+
+```bash
+# Replace <pool> with your pool name (e.g. tank)
+cd /mnt/<pool>/appdata/wolf
+
+# Check if Wolf is running
+docker compose ps
+
+# View logs (press Ctrl+C to stop watching)
+docker compose logs -f
+
+# Stop Wolf
+docker compose stop
+
+# Restart Wolf
+docker compose restart
+
+# Update to the latest version
+docker compose pull
+docker compose up -d
+```
+
 ### Proxmox
 
 First enter the container, then use Docker commands:
@@ -360,6 +408,7 @@ The script is safe to re-run. It won't break anything if you run it again:
 
 - **Proxmox / LXC / Incus**: If the container already exists, it skips creation and reconfigures GPU passthrough
 - **Unraid**: If the compose file exists, it updates and restarts the services. Boot persistence entries in `/boot/config/go` are only added once.
+- **TrueNAS SCALE**: If the compose file exists, it updates and restarts the services. The init script registration is updated in place.
 - **Docker**: If the compose file exists, it updates and restarts the services
 - **Podman**: If the Quadlet file exists, it overwrites it with the latest configuration
 
@@ -379,9 +428,17 @@ If nothing shows up, your GPU driver isn't installed or loaded. Search for how t
 
 Docker must be enabled in the Unraid web UI. Go to **Settings > Docker** and set **Enable Docker** to **Yes**, then click **Apply**. Once Docker is running, re-run the script.
 
+### TrueNAS: "Docker is not available"
+
+Docker support requires TrueNAS SCALE Electric Eel (24.10) or later. Earlier versions of SCALE used Kubernetes (k3s) instead of Docker and are not supported by this script. Check your TrueNAS version in the web UI under **System > General** and upgrade if needed.
+
+### TrueNAS: "midclt not found"
+
+This script only supports **TrueNAS SCALE** (Linux-based). **TrueNAS CORE** is FreeBSD-based and uses jails instead of Docker, which is not compatible with this script. If you're on TrueNAS CORE, consider migrating to TrueNAS SCALE.
+
 ### "Could not detect environment"
 
-The script couldn't find Proxmox, LXC, Unraid, Podman, or Docker. You need at least one of these installed:
+The script couldn't find Proxmox, LXC, Unraid, TrueNAS, Podman, or Docker. You need at least one of these installed:
 
 - **Docker**: Follow the [official Docker install guide](https://docs.docker.com/engine/install/)
 - **Podman**: Install with your package manager (e.g. `apt install podman` on Debian/Ubuntu)
@@ -447,6 +504,25 @@ rm /etc/udev/rules.d/85-wolf-virtual-inputs.rules
 ```
 
 Then edit `/boot/config/go` and remove the lines between `# Wolf udev rules` and `# Wolf docker-compose` (inclusive), plus the `docker compose ... up -d` line that follows.
+
+### TrueNAS SCALE
+
+```bash
+# Replace <pool> with your pool name
+cd /mnt/<pool>/appdata/wolf
+docker compose down
+rm -rf /mnt/<pool>/appdata/wolf
+rm /etc/udev/rules.d/85-wolf-virtual-inputs.rules
+```
+
+Then remove the init script from TrueNAS. In the web UI, go to **System > Advanced > Init/Shutdown Scripts** and delete the Wolf entry. Or from the CLI:
+
+```bash
+# Find the script ID
+midclt call initshutdownscript.query '[["script", "~", "wolf-init.sh"]]'
+# Delete it (replace <id> with the ID from the output)
+midclt call initshutdownscript.delete <id>
+```
 
 ### Proxmox
 

@@ -20,10 +20,11 @@ This directory contains `wolf.sh`, the entry point script that turns a Linux mac
 | **LXC / Incus** (Linux container tools) | Same as Proxmox but using standalone LXC tools or Incus instead |
 | **Unraid** (NAS server OS) | Deploys Wolf + Wolf Den via Docker Compose with persistent appdata paths and boot-persistent udev rules |
 | **TrueNAS SCALE** (NAS server OS) | Deploys Wolf + Wolf Den via Docker Compose on a ZFS dataset with update-persistent init scripts |
+| **NixOS** (declarative Linux distro) | Generates a NixOS module (`wolf.nix`) that you import into your system configuration |
 | **Docker** (on any Linux machine) | Deploys Wolf + Wolf Den directly using Docker Compose |
 | **Podman** (on any Linux machine) | Deploys Wolf + Wolf Den as systemd services using Podman Quadlets |
 
-You don't need to choose -- the script figures out which one you have and does the right thing. It checks in this order: Proxmox, LXC/Incus, Unraid, TrueNAS, Podman, Docker.
+You don't need to choose -- the script figures out which one you have and does the right thing. It checks in this order: Proxmox, LXC/Incus, Unraid, TrueNAS, NixOS, Podman, Docker.
 
 > **What's a "container"?** On Proxmox, LXC, and Incus, the script creates a lightweight virtual environment (a "container") on your server to run Wolf in. Think of it as a mini computer running inside your computer. Your GPU is shared with this container so Wolf can use it for gaming. On Docker and Podman, Wolf runs directly on your machine without this extra layer.
 
@@ -38,6 +39,7 @@ After setup, **Steam** is pre-configured as a launchable app in Moonlight. You c
   - Any Linux machine with LXC tools (`lxc-create`) or Incus installed
   - An Unraid server (6.x or 7.x) with Docker enabled
   - A TrueNAS SCALE server (Electric Eel 24.10+) with Docker support
+  - A NixOS machine (with or without flakes)
   - Any Linux machine with Docker installed
   - Any Linux machine with Podman installed
 - **GPU drivers installed and working**:
@@ -163,6 +165,18 @@ These options control where Wolf stores its data on NAS systems. Both Unraid and
 | `--appdata <path>` | Full path to the directory where Wolf stores its configuration, Docker Compose file, Steam data, Wolf Den state, and cover art. On Unraid, the convention is `/mnt/user/appdata/wolf`. On TrueNAS, it defaults to `/mnt/<pool>/appdata/wolf` (derived from the selected pool). If you specify `--appdata`, it overrides pool-based derivation on TrueNAS. | `/mnt/user/appdata/wolf` (Unraid), `/mnt/<pool>/appdata/wolf` (TrueNAS) |
 | `--pool <name>` | TrueNAS only. Which ZFS pool to store Wolf's appdata on. If not specified and multiple pools exist, the script presents a selection prompt. If only one pool exists, it is used automatically. Ignored if `--appdata` is explicitly set. | Auto (prompt if multiple) |
 
+### NixOS
+
+NixOS is declarative, so the script does not deploy Wolf directly. Instead, it generates a NixOS module file (`wolf.nix`) that you import into your system configuration and apply with `nixos-rebuild switch`. No options are required, but you can control the output:
+
+| Option | What it does | Default |
+|---|---|---|
+| `--render-node <path>` | Which GPU to use. The selected render node is baked into the generated module. | Auto-detected |
+
+The generated module includes Docker enablement, udev rules, and Wolf + Wolf Den as OCI containers. For NVIDIA GPUs, it also integrates the [wolf-nvidia-vol flake](https://github.com/altano/flakes/tree/main/wolf-nvidia-vol) for automatic driver volume creation, and the script prints the flake input you need to add.
+
+> **Note:** The script does not run `nixos-rebuild`. It generates the configuration and tells you how to apply it. This is intentional: `nixos-rebuild` is a system-wide operation that should be reviewed before running.
+
 ### Flag interaction notes
 
 - **`--appdata` and `--pool`**: On TrueNAS, `--pool tank` sets the appdata path to `/mnt/tank/appdata/wolf`. If you also pass `--appdata /some/other/path`, the `--appdata` value wins and `--pool` is ignored.
@@ -219,7 +233,19 @@ TrueNAS -- override the default appdata location entirely:
 ./wolf.sh --appdata /mnt/tank/custom/wolf-gaming
 ```
 
-Use a specific GPU (skip the selection prompt):
+NixOS -- generate the module (auto-detects GPU):
+
+```bash
+./wolf.sh
+```
+
+NixOS -- specify a GPU for the generated module:
+
+```bash
+./wolf.sh --render-node /dev/dri/renderD129
+```
+
+Use a specific GPU on any environment (skip the selection prompt):
 
 ```bash
 ./wolf.sh --render-node /dev/dri/renderD129
@@ -280,6 +306,25 @@ Combine multiple options:
 > **Note:** TrueNAS SCALE overwrites its system partition on updates, so nothing in `/etc/` persists. All Wolf data lives on a ZFS dataset. The init script is registered with TrueNAS via `midclt` and appears in the TrueNAS UI under System > Advanced > Init/Shutdown Scripts.
 >
 > **TrueNAS CORE (FreeBSD) is not supported** -- this script requires TrueNAS SCALE, which is Linux-based.
+
+### NixOS
+
+The script does not deploy Wolf directly on NixOS. Instead, it generates a module file:
+
+| Path | What it is |
+|---|---|
+| `./wolf.nix` | NixOS module defining Docker, udev rules, and Wolf + Wolf Den OCI containers |
+
+After you import `wolf.nix` into your system configuration and run `nixos-rebuild switch`, NixOS manages:
+
+| Managed by NixOS | What it is |
+|---|---|
+| `virtualisation.docker` | Docker daemon (enabled by the module) |
+| `virtualisation.oci-containers` | Wolf and Wolf Den containers (started automatically) |
+| `services.udev.extraRules` | Virtual input device rules |
+| `/etc/wolf/` | Wolf configuration and data directories (created via `systemd.tmpfiles`) |
+
+For NVIDIA GPUs, the module also references the [wolf-nvidia-vol flake](https://github.com/altano/flakes/tree/main/wolf-nvidia-vol), which builds a driver volume from your system's NVIDIA package. The volume is rebuilt automatically when you update your NVIDIA driver and run `nixos-rebuild`.
 
 ### Docker
 
@@ -412,6 +457,28 @@ docker compose pull
 docker compose up -d
 ```
 
+### NixOS
+
+Wolf is managed as a NixOS systemd service. Container names are prefixed with `docker-` by NixOS.
+
+```bash
+# Check if Wolf is running
+systemctl status docker-wolf docker-wolf-den
+
+# View logs (press Ctrl+C to stop watching)
+journalctl -u docker-wolf -f       # Wolf logs
+journalctl -u docker-wolf-den -f   # Wolf Den logs
+
+# Restart Wolf
+systemctl restart docker-wolf docker-wolf-den
+
+# Update to the latest version: edit wolf.nix to change the image tag,
+# or pull the latest :stable images and restart
+docker pull ghcr.io/games-on-whales/wolf:stable
+docker pull ghcr.io/games-on-whales/wolf-den:stable
+systemctl restart docker-wolf docker-wolf-den
+```
+
 ### Proxmox
 
 First enter the container, then use Docker commands:
@@ -458,6 +525,7 @@ The script is safe to re-run. It won't break anything if you run it again. On re
 - **Proxmox / LXC / Incus**: If the container already exists, it skips creation and reconfigures GPU passthrough
 - **Unraid**: If the compose file exists, it updates and restarts the services. Boot persistence entries in `/boot/config/go` are only added once.
 - **TrueNAS SCALE**: If the compose file exists, it updates and restarts the services. The init script registration is updated in place.
+- **NixOS**: The script regenerates `wolf.nix`, overwriting the previous version. You still need to run `nixos-rebuild switch` to apply changes.
 - **Docker**: If the compose file exists, it updates and restarts the services
 - **Podman**: If the Quadlet file exists, it overwrites it with the latest configuration
 
@@ -485,9 +553,24 @@ Docker support requires TrueNAS SCALE Electric Eel (24.10) or later. Earlier ver
 
 This script only supports **TrueNAS SCALE** (Linux-based). **TrueNAS CORE** is FreeBSD-based and uses jails instead of Docker, which is not compatible with this script. If you're on TrueNAS CORE, consider migrating to TrueNAS SCALE.
 
+### NixOS: Wolf containers not starting after rebuild
+
+Check the container service status:
+
+```bash
+systemctl status docker-wolf
+journalctl -u docker-wolf -e
+```
+
+Common causes: Docker isn't running (`systemctl status docker`), GPU device nodes don't exist (`ls /dev/dri/renderD*`), or the render node in `wolf.nix` doesn't match your GPU (re-run `wolf.sh` to regenerate with the correct node).
+
+### NixOS: NVIDIA volume build fails
+
+Make sure `hardware.nvidia.package` is set in your NixOS configuration and that the NVIDIA driver is working (`nvidia-smi`). The wolf-nvidia-vol flake derives the volume from this package. If you're not using flakes, you'll need to adapt the module to build the NVIDIA volume manually (see the [wolf-nvidia-vol flake docs](https://github.com/altano/flakes/tree/main/wolf-nvidia-vol)).
+
 ### "Could not detect environment"
 
-The script couldn't find Proxmox, LXC, Unraid, TrueNAS, Podman, or Docker. You need at least one of these installed:
+The script couldn't find Proxmox, LXC, Unraid, TrueNAS, NixOS, Podman, or Docker. You need at least one of these installed:
 
 - **Docker**: Follow the [official Docker install guide](https://docs.docker.com/engine/install/)
 - **Podman**: Install with your package manager (e.g. `apt install podman` on Debian/Ubuntu)
@@ -573,6 +656,22 @@ midclt call initshutdownscript.query '[["script", "~", "wolf-init.sh"]]'
 midclt call initshutdownscript.delete <id>
 ```
 
+### NixOS
+
+Remove the `wolf.nix` import from your `configuration.nix` (or flake), then rebuild:
+
+```bash
+sudo nixos-rebuild switch
+```
+
+This stops the Wolf containers and removes the udev rules. Optionally, clean up Wolf's data directory:
+
+```bash
+sudo rm -rf /etc/wolf
+```
+
+If you added the `wolf-nvidia-vol` flake input for NVIDIA, you can also remove it from your `flake.nix`.
+
 ### Proxmox
 
 ```bash
@@ -647,6 +746,7 @@ This means `wolf.sh` itself knows nothing about specific flags. All argument def
 | `incus.sh` | Incus container creation with device passthrough |
 | `unraid.sh` | Unraid deployment with `/boot/config/go` persistence |
 | `truenas.sh` | TrueNAS SCALE deployment with ZFS pool selection and `midclt` init scripts |
+| `nixos.sh` | NixOS module generation (wolf.nix) for declarative deployment |
 | `podman.sh` | Podman Quadlet generation and systemd integration |
 | `docker.sh` | Docker Compose deployment |
 | `configure.sh` | Container-side setup (pushed into LXC by Proxmox/LXC/Incus scripts, sources `common.sh` independently) |

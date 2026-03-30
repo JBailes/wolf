@@ -4,6 +4,52 @@
 # Sourced by wolf.sh and environment-specific scripts. Not run directly.
 
 # =========================================================================
+# Defaults (set once, not overwritten if already set by caller)
+# =========================================================================
+
+: "${CTID:=120}"
+: "${CT_CPU:=4}"
+: "${CT_RAM:=4096}"
+: "${CT_DISK:=16}"
+: "${CT_IP:=auto}"
+: "${CT_GW:=auto}"
+: "${CT_CIDR:=auto}"
+: "${CT_STORAGE:=auto}"
+: "${LXC_NAME:=wolf}"
+: "${APPDATA:=/mnt/user/appdata/wolf}"
+: "${ZFS_POOL:=auto}"
+
+: "${IMAGE_STORAGE:=isos}"
+: "${TEMPLATE:=${IMAGE_STORAGE}:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst}"
+: "${LAN_BRIDGE:=vmbr0}"
+
+# =========================================================================
+# Argument parsing
+# =========================================================================
+
+# Parse shared CLI flags into globals. Unknown flags are silently ignored
+# so environment-specific scripts can extend with their own flags.
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --ctid)        CTID="${2:?--ctid requires a value}"; shift 2 ;;
+            --cpu)         CT_CPU="${2:?--cpu requires a value}"; shift 2 ;;
+            --ram)         CT_RAM="${2:?--ram requires a value}"; shift 2 ;;
+            --disk)        CT_DISK="${2:?--disk requires a value}"; shift 2 ;;
+            --ip)          CT_IP="${2:?--ip requires a value}"; shift 2 ;;
+            --gw)          CT_GW="${2:?--gw requires a value}"; shift 2 ;;
+            --cidr)        CT_CIDR="${2:?--cidr requires a value}"; shift 2 ;;
+            --storage)     CT_STORAGE="${2:?--storage requires a value}"; shift 2 ;;
+            --name)        LXC_NAME="${2:?--name requires a value}"; shift 2 ;;
+            --render-node) SELECTED_RENDER_NODE="${2:?--render-node requires a value}"; shift 2 ;;
+            --appdata)     APPDATA="${2:?--appdata requires a value}"; shift 2 ;;
+            --pool)        ZFS_POOL="${2:?--pool requires a value}"; shift 2 ;;
+            *)             shift ;;
+        esac
+    done
+}
+
+# =========================================================================
 # Output helpers
 # =========================================================================
 

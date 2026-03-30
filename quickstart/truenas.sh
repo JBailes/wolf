@@ -101,6 +101,7 @@ register_truenas_init() {
 # =========================================================================
 
 truenas_main() {
+    parse_args "$@"
     [[ $EUID -eq 0 ]] || err "Run as root"
 
     command -v docker &>/dev/null \

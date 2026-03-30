@@ -66,6 +66,7 @@ detect_network() {
 # =========================================================================
 
 proxmox_main() {
+    parse_args "$@"
     [[ $EUID -eq 0 ]] || err "Run as root"
 
     if [[ "$CT_IP" == "auto" || "$CT_GW" == "auto" || "$CT_CIDR" == "auto" ]]; then

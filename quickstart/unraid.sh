@@ -37,6 +37,7 @@ EOF
 }
 
 unraid_main() {
+    parse_args "$@"
     [[ $EUID -eq 0 ]] || err "Run as root"
 
     command -v docker &>/dev/null || err "Docker is not available. Enable Docker in Unraid Settings > Docker."

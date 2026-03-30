@@ -4,6 +4,7 @@
 # Sourced by wolf.sh. Requires common.sh to be loaded first.
 
 docker_main() {
+    parse_args "$@"
     [[ $EUID -eq 0 ]] || err "Run as root"
 
     select_gpu

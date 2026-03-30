@@ -93,6 +93,7 @@ QUADLET
 # =========================================================================
 
 podman_main() {
+    parse_args "$@"
     [[ $EUID -eq 0 ]] || err "Run as root"
 
     select_gpu

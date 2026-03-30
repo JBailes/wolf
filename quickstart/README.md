@@ -1,6 +1,6 @@
 # Wolf Cloud Gaming Setup
 
-This directory contains `wolf.sh`, a single self-contained script that turns a Linux machine with a GPU into a cloud gaming host using [Wolf](https://github.com/games-on-whales/wolf) and [Moonlight](https://moonlight-stream.org/).
+This directory contains `wolf.sh`, the entry point script that turns a Linux machine with a GPU into a cloud gaming host using [Wolf](https://github.com/games-on-whales/wolf) and [Moonlight](https://moonlight-stream.org/). You only need `wolf.sh` to get started -- it automatically downloads any additional scripts it needs.
 
 ## What is this?
 
@@ -67,28 +67,28 @@ If you see output like `/dev/dri/renderD128`, your GPU driver is loaded and you'
 
 ## Quick start
 
-### Step 1: Copy the script to your server
-
-From your local machine, copy the script to your server:
-
-```bash
-scp wolf.sh root@your-server-ip:/root/
-```
-
-Or, if you're already on the server, download it directly or copy it however you prefer.
-
-### Step 2: Run the script
+### Step 1: Download and run
 
 SSH into your server and run:
 
 ```bash
 ssh root@your-server-ip
-chmod +x /root/wolf.sh
+curl -fsSLO https://raw.githubusercontent.com/JBailes/wolf/main/quickstart/wolf.sh
+chmod +x wolf.sh
+./wolf.sh
+```
+
+Or, if you don't have curl:
+
+```bash
+wget -qO wolf.sh https://raw.githubusercontent.com/JBailes/wolf/main/quickstart/wolf.sh
+chmod +x wolf.sh
 ./wolf.sh
 ```
 
 The script will:
-- Figure out if you're on Proxmox, LXC, Incus, Docker, or Podman
+- Figure out if you're on Proxmox, LXC, Incus, Unraid, TrueNAS, Docker, or Podman
+- Download the scripts it needs for your environment (requires curl or wget)
 - Detect your GPU automatically
 - Set everything up
 
@@ -404,7 +404,7 @@ docker compose ps
 
 ## Re-running the script
 
-The script is safe to re-run. It won't break anything if you run it again:
+The script is safe to re-run. It won't break anything if you run it again. On re-runs, already-downloaded helper scripts are reused from disk:
 
 - **Proxmox / LXC / Incus**: If the container already exists, it skips creation and reconfigures GPU passthrough
 - **Unraid**: If the compose file exists, it updates and restarts the services. Boot persistence entries in `/boot/config/go` are only added once.
@@ -573,3 +573,22 @@ sudo firewall-cmd --permanent --add-port=47998-48200/udp
 sudo firewall-cmd --permanent --add-port=8080/tcp
 sudo firewall-cmd --reload
 ```
+
+## Script architecture
+
+You only need `wolf.sh` to get started. It detects your environment and automatically downloads the helper scripts it needs:
+
+| Script | Purpose |
+|---|---|
+| `wolf.sh` | Entry point: detects environment, downloads helpers, dispatches |
+| `common.sh` | Shared helpers: GPU detection, compose generation, udev rules, NVIDIA volume |
+| `proxmox.sh` | Proxmox LXC creation and GPU passthrough |
+| `lxc.sh` | Standalone LXC container creation |
+| `incus.sh` | Incus container creation |
+| `unraid.sh` | Unraid deployment with boot-persistent config |
+| `truenas.sh` | TrueNAS SCALE deployment with ZFS and midclt init scripts |
+| `podman.sh` | Podman Quadlet generation and systemd integration |
+| `docker.sh` | Docker Compose deployment |
+| `configure.sh` | Container-side setup (pushed into LXC by Proxmox/LXC/Incus scripts) |
+
+Helper scripts are downloaded from GitHub on first run and cached locally for subsequent runs. Requires `curl` or `wget`.

@@ -1,6 +1,6 @@
 # Wolf Cloud Gaming Setup
 
-This directory contains `wolf.sh`, a single self-contained script that turns a Linux machine with a GPU into a cloud gaming host using [Wolf](https://github.com/games-on-whales/wolf) and [Moonlight](https://moonlight-stream.org/).
+This directory contains `wolf.sh`, the entry point script that turns a Linux machine with a GPU into a cloud gaming host using [Wolf](https://github.com/games-on-whales/wolf) and [Moonlight](https://moonlight-stream.org/). You only need `wolf.sh` to get started -- it automatically downloads any additional scripts it needs.
 
 ## What is this?
 
@@ -67,28 +67,28 @@ If you see output like `/dev/dri/renderD128`, your GPU driver is loaded and you'
 
 ## Quick start
 
-### Step 1: Copy the script to your server
-
-From your local machine, copy the script to your server:
-
-```bash
-scp wolf.sh root@your-server-ip:/root/
-```
-
-Or, if you're already on the server, download it directly or copy it however you prefer.
-
-### Step 2: Run the script
+### Step 1: Download and run
 
 SSH into your server and run:
 
 ```bash
 ssh root@your-server-ip
-chmod +x /root/wolf.sh
+curl -fsSLO https://raw.githubusercontent.com/JBailes/wolf/main/quickstart/wolf.sh
+chmod +x wolf.sh
+./wolf.sh
+```
+
+Or, if you don't have curl:
+
+```bash
+wget -qO wolf.sh https://raw.githubusercontent.com/JBailes/wolf/main/quickstart/wolf.sh
+chmod +x wolf.sh
 ./wolf.sh
 ```
 
 The script will:
-- Figure out if you're on Proxmox, LXC, Incus, Docker, or Podman
+- Figure out if you're on Proxmox, LXC, Incus, Unraid, TrueNAS, Docker, or Podman
+- Download the scripts it needs for your environment (requires curl or wget)
 - Detect your GPU automatically
 - Set everything up
 
@@ -121,22 +121,53 @@ To pair with Moonlight:
 
 ## Options
 
-All options are optional. The script auto-detects sensible defaults for everything. Just running `./wolf.sh` with no options works in most cases. Flags that don't apply to your environment are silently ignored, so the same command works everywhere.
+All options are optional. Running `./wolf.sh` with no options works in most cases -- the script auto-detects sensible defaults for everything. You pass options to `wolf.sh` and it forwards them to the appropriate environment script. Flags that don't apply to your detected environment are silently ignored, so the same command line works everywhere.
 
-| Option | What it does | Default | Used by |
-|---|---|---|---|
-| `--cpu <cores>` | How many CPU cores to give the container | `4` | Proxmox, LXC, Incus |
-| `--ram <mb>` | How much memory (in MB) to give the container | `4096` (4 GB) | Proxmox, LXC, Incus |
-| `--disk <gb>` | How much disk space (in GB) | `16` | Proxmox, LXC, Incus |
-| `--name <name>` | Name for the container | `wolf` | LXC, Incus |
-| `--ctid <id>` | Container ID number | `120` | Proxmox |
-| `--ip <addr>` | IP address for the container | Auto: uses your network + CTID | Proxmox |
-| `--gw <addr>` | Your router's IP address | Auto: detected from your network | Proxmox |
-| `--cidr <bits>` | Subnet size (you probably don't need to change this) | Auto: detected from your network | Proxmox |
-| `--storage <name>` | Which Proxmox storage pool to use | Auto: asks you if there are multiple | Proxmox |
-| `--render-node <path>` | Which GPU to use (e.g. `/dev/dri/renderD128`) | Auto: you choose if there are multiple | All |
-| `--appdata <path>` | Where to store Wolf's config and data | `/mnt/user/appdata/wolf` (Unraid), `/mnt/<pool>/appdata/wolf` (TrueNAS) | Unraid, TrueNAS |
-| `--pool <name>` | Which ZFS pool to store appdata on | Auto: you choose if there are multiple | TrueNAS |
+### All environments
+
+These options are recognized by every environment script.
+
+| Option | What it does | Default |
+|---|---|---|
+| `--render-node <path>` | Force a specific GPU render device (e.g. `/dev/dri/renderD128`). Without this, the script auto-detects your GPU(s) and, if there are multiple, presents a selection prompt. | Auto-detected |
+
+### Container environments (Proxmox, LXC, Incus)
+
+These options control the container that gets created to run Wolf in. They have no effect on Docker, Podman, Unraid, or TrueNAS (which run Wolf directly on the host).
+
+| Option | What it does | Default |
+|---|---|---|
+| `--cpu <cores>` | Number of CPU cores to allocate to the container. More cores help with demanding games. | `4` |
+| `--ram <mb>` | Amount of memory in megabytes to allocate to the container. | `4096` (4 GB) |
+| `--disk <gb>` | Root disk size in gigabytes for the container. This is the disk inside the container where Docker, Wolf, and game data live. If you plan to install many games via Steam, increase this. | `16` |
+| `--name <name>` | Name for the container. Used by LXC and Incus only (Proxmox uses the hostname `wolf` and identifies containers by CTID instead). | `wolf` |
+
+### Proxmox only
+
+These options are specific to Proxmox VE and are ignored on all other environments.
+
+| Option | What it does | Default |
+|---|---|---|
+| `--ctid <id>` | Proxmox container ID number. Must be unique on your Proxmox host. Also used to derive the container's IP address when `--ip` is not specified (the last octet of the IP is set to this value). | `120` |
+| `--ip <addr>` | Static IP address for the container (e.g. `192.168.1.150`). If not specified, the script takes your host's IP, replaces the last octet with the CTID value, and uses that. For example, if your host is `192.168.1.10` and CTID is `120`, the container gets `192.168.1.120`. | Auto-derived from host IP + CTID |
+| `--gw <addr>` | Default gateway (your router's IP address). The script detects this from the host's routing table. You only need to specify this if auto-detection fails or if the container should use a different gateway. | Auto-detected from host |
+| `--cidr <bits>` | Subnet prefix length (e.g. `24` for a `/24` or `255.255.255.0` subnet). Detected from the host's network configuration. You almost never need to set this manually. | Auto-detected from host |
+| `--storage <name>` | Proxmox storage pool to create the container's root disk on (e.g. `local-lvm`, `zfs-pool`). If not specified and multiple storage pools are available, the script presents a selection prompt. If only one pool exists, it is used automatically. | Auto (prompt if multiple) |
+
+### NAS environments (Unraid, TrueNAS SCALE)
+
+These options control where Wolf stores its data on NAS systems. Both Unraid and TrueNAS have non-persistent system partitions, so all Wolf data must be stored on persistent storage.
+
+| Option | What it does | Default |
+|---|---|---|
+| `--appdata <path>` | Full path to the directory where Wolf stores its configuration, Docker Compose file, Steam data, Wolf Den state, and cover art. On Unraid, the convention is `/mnt/user/appdata/wolf`. On TrueNAS, it defaults to `/mnt/<pool>/appdata/wolf` (derived from the selected pool). If you specify `--appdata`, it overrides pool-based derivation on TrueNAS. | `/mnt/user/appdata/wolf` (Unraid), `/mnt/<pool>/appdata/wolf` (TrueNAS) |
+| `--pool <name>` | TrueNAS only. Which ZFS pool to store Wolf's appdata on. If not specified and multiple pools exist, the script presents a selection prompt. If only one pool exists, it is used automatically. Ignored if `--appdata` is explicitly set. | Auto (prompt if multiple) |
+
+### Flag interaction notes
+
+- **`--appdata` and `--pool`**: On TrueNAS, `--pool tank` sets the appdata path to `/mnt/tank/appdata/wolf`. If you also pass `--appdata /some/other/path`, the `--appdata` value wins and `--pool` is ignored.
+- **`--ip` and `--ctid`**: On Proxmox, the default container IP is derived from `--ctid`. If you set `--ctid 200` without `--ip`, the container gets IP `x.x.x.200`. Setting `--ip` explicitly overrides this derivation.
+- **Cross-environment flags**: Passing a flag that doesn't apply to your environment (e.g. `--ctid` on Docker) is harmless. The flag is parsed and stored, but the environment script never reads it.
 
 ### Examples
 
@@ -152,19 +183,25 @@ Proxmox -- specify a custom container ID and IP:
 ./wolf.sh --ctid 150 --ip 192.168.1.150
 ```
 
-LXC / Incus -- give the container a custom name and more resources:
-
-```bash
-./wolf.sh --name my-wolf --cpu 8 --ram 8192
-```
-
 Proxmox -- give the container more resources for demanding games:
 
 ```bash
 ./wolf.sh --cpu 8 --ram 8192 --disk 32
 ```
 
-Unraid -- use a custom appdata path:
+Proxmox -- use a specific storage pool:
+
+```bash
+./wolf.sh --storage local-zfs
+```
+
+LXC / Incus -- give the container a custom name and more resources:
+
+```bash
+./wolf.sh --name my-wolf --cpu 8 --ram 8192
+```
+
+Unraid -- use a custom appdata path (e.g. cache-only share):
 
 ```bash
 ./wolf.sh --appdata /mnt/cache/appdata/wolf
@@ -176,10 +213,22 @@ TrueNAS -- specify the pool (skip the selection prompt):
 ./wolf.sh --pool tank
 ```
 
+TrueNAS -- override the default appdata location entirely:
+
+```bash
+./wolf.sh --appdata /mnt/tank/custom/wolf-gaming
+```
+
 Use a specific GPU (skip the selection prompt):
 
 ```bash
 ./wolf.sh --render-node /dev/dri/renderD129
+```
+
+Combine multiple options:
+
+```bash
+./wolf.sh --cpu 8 --ram 16384 --disk 64 --render-node /dev/dri/renderD128
 ```
 
 ## What gets created on your system
@@ -404,7 +453,7 @@ docker compose ps
 
 ## Re-running the script
 
-The script is safe to re-run. It won't break anything if you run it again:
+The script is safe to re-run. It won't break anything if you run it again. On re-runs, already-downloaded helper scripts are reused from disk:
 
 - **Proxmox / LXC / Incus**: If the container already exists, it skips creation and reconfigures GPU passthrough
 - **Unraid**: If the compose file exists, it updates and restarts the services. Boot persistence entries in `/boot/config/go` are only added once.
@@ -573,3 +622,33 @@ sudo firewall-cmd --permanent --add-port=47998-48200/udp
 sudo firewall-cmd --permanent --add-port=8080/tcp
 sudo firewall-cmd --reload
 ```
+
+## Script architecture
+
+You only need `wolf.sh` to get started. It detects your environment and automatically downloads the helper scripts it needs (requires `curl` or `wget`).
+
+### How it works
+
+1. `wolf.sh` detects your environment (Proxmox, LXC, Incus, Unraid, TrueNAS, Podman, or Docker)
+2. It checks whether the required helper scripts (`common.sh` + the environment-specific script) exist in the same directory. If any are missing, it downloads them from GitHub.
+3. It sources `common.sh` (shared defaults, argument parser, and helpers) and the environment script.
+4. It calls the environment's main function, passing all CLI arguments through. The main function calls `parse_args` (defined in `common.sh`) to populate globals from the command line.
+
+This means `wolf.sh` itself knows nothing about specific flags. All argument definitions live in `common.sh`, and each environment script decides which globals it reads. To add a new flag, you edit `common.sh` (for shared flags) or the environment script (for environment-specific parsing).
+
+### Scripts
+
+| Script | Purpose |
+|---|---|
+| `wolf.sh` | Entry point: detects environment, downloads helpers, dispatches with all CLI args |
+| `common.sh` | Shared defaults, argument parsing (`parse_args`), GPU detection, compose generation, udev rules, NVIDIA volume, LXC GPU config, Wolf config template |
+| `proxmox.sh` | Proxmox LXC creation, storage selection, network detection, GPU passthrough |
+| `lxc.sh` | Standalone LXC container creation with resource limits |
+| `incus.sh` | Incus container creation with device passthrough |
+| `unraid.sh` | Unraid deployment with `/boot/config/go` persistence |
+| `truenas.sh` | TrueNAS SCALE deployment with ZFS pool selection and `midclt` init scripts |
+| `podman.sh` | Podman Quadlet generation and systemd integration |
+| `docker.sh` | Docker Compose deployment |
+| `configure.sh` | Container-side setup (pushed into LXC by Proxmox/LXC/Incus scripts, sources `common.sh` independently) |
+
+Helper scripts are downloaded on first run and cached locally for subsequent runs.

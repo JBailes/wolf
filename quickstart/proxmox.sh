@@ -69,6 +69,11 @@ resolve_template() {
     info "Selected template: ${TEMPLATE}"
 }
 
+validate_template() {
+    [[ -n "${TEMPLATE:-}" && "${TEMPLATE}" != "auto" ]] || \
+        err "Template resolution failed before container creation. Update quickstart/proxmox.sh to a version that resolves --template auto, or pass --template <storage:vztmpl/file.tar.zst> explicitly."
+}
+
 select_storage() {
     local storages=()
     local labels=()
@@ -136,6 +141,7 @@ proxmox_main() {
     fi
 
     resolve_template
+    validate_template
     [[ "$CT_STORAGE" == "auto" ]] && select_storage
 
     select_gpu

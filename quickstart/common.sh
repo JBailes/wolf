@@ -19,6 +19,7 @@
 : "${APPDATA:=/mnt/user/appdata/wolf}"
 : "${ZFS_POOL:=auto}"
 
+: "${IMAGE_STORAGE:=isos}"
 : "${PROXMOX_TEMPLATE_FILE:=debian-13-standard_13.1-2_amd64.tar.zst}"
 : "${TEMPLATE:=auto}"
 : "${LAN_BRIDGE:=vmbr0}"
@@ -40,6 +41,8 @@ parse_args() {
             --gw)          CT_GW="${2:?--gw requires a value}"; shift 2 ;;
             --cidr)        CT_CIDR="${2:?--cidr requires a value}"; shift 2 ;;
             --storage)     CT_STORAGE="${2:?--storage requires a value}"; shift 2 ;;
+            --image-storage) IMAGE_STORAGE="${2:?--image-storage requires a value}"; shift 2 ;;
+            --template)    TEMPLATE="${2:?--template requires a value}"; shift 2 ;;
             --name)        LXC_NAME="${2:?--name requires a value}"; shift 2 ;;
             --render-node) SELECTED_RENDER_NODE="${2:?--render-node requires a value}"; shift 2 ;;
             --appdata)     APPDATA="${2:?--appdata requires a value}"; shift 2 ;;

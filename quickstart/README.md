@@ -155,6 +155,8 @@ These options are specific to Proxmox VE and are ignored on all other environmen
 | `--gw <addr>` | Default gateway (your router's IP address). The script detects this from the host's routing table. You only need to specify this if auto-detection fails or if the container should use a different gateway. | Auto-detected from host |
 | `--cidr <bits>` | Subnet prefix length (e.g. `24` for a `/24` or `255.255.255.0` subnet). Detected from the host's network configuration. You almost never need to set this manually. | Auto-detected from host |
 | `--storage <name>` | Proxmox storage pool to create the container's root disk on (e.g. `local-lvm`, `zfs-pool`). If not specified and multiple storage pools are available, the script presents a selection prompt. If only one pool exists, it is used automatically. | Auto (prompt if multiple) |
+| `--image-storage <name>` | Proxmox storage that contains downloaded LXC templates (for example `local` or `isos`). Used when auto-selecting a Debian template or when `--template` is passed without a storage prefix. | `isos` |
+| `--template <value>` | Proxmox LXC template volume to use. Accepts a full volume ID like `local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst`, a bare filename combined with `--image-storage`, or `auto` to select from available Debian templates. | Auto-select Debian template |
 
 ### NAS environments (Unraid, TrueNAS SCALE)
 

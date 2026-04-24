@@ -7,25 +7,55 @@
 # Storage selection
 # =========================================================================
 
-select_template() {
-    local template_file="${PROXMOX_TEMPLATE_FILE}"
+resolve_template() {
+    local template_input="${TEMPLATE:-}"
     local templates=()
     local labels=()
+    local image_storage="${IMAGE_STORAGE:-}"
+    local line name type enabled volume volid
 
-    while IFS='|' read -r name type enabled; do
-        [[ "$enabled" == "1" ]] || continue
+    if [[ -z "$template_input" || "$template_input" == "auto" ]]; then
+        template_input=""
+    fi
 
-        if pvesm list "$name" --content vztmpl 2>/dev/null \
-            | awk 'NR>1 {print $1}' \
-            | grep -Fxq "${name}:vztmpl/${template_file}"; then
-            templates+=("${name}:vztmpl/${template_file}")
-            labels+=("${name} (${type})")
+    if [[ -n "$template_input" ]]; then
+        if [[ "$template_input" == *:* ]]; then
+            TEMPLATE="$template_input"
+            return
         fi
-    done < <(pvesm status --content vztmpl 2>/dev/null \
-        | awk 'NR>1 {printf "%s|%s|%s\n", $1, $2, ($3=="active"?"1":"0")}')
+
+        TEMPLATE="${image_storage}:vztmpl/${template_input}"
+        return
+    fi
+
+    if [[ -n "$image_storage" ]]; then
+        while IFS= read -r line; do
+            [[ -n "$line" ]] || continue
+            volume="${line%% *}"
+            volid="${volume#*/}"
+            [[ "$volid" == vztmpl/* ]] || continue
+            [[ "$volid" == *debian* ]] || continue
+            templates+=("$volume")
+            labels+=("$volume")
+        done < <(pvesm list "$image_storage" 2>/dev/null)
+    fi
 
     if [[ ${#templates[@]} -eq 0 ]]; then
-        err "Could not find ${template_file} on any active Proxmox container-template storage"
+        while IFS='|' read -r name type enabled; do
+            [[ "$enabled" == "1" ]] || continue
+
+            if pvesm list "$name" --content vztmpl 2>/dev/null \
+                | awk 'NR>1 {print $1}' \
+                | grep -Fxq "${name}:vztmpl/${PROXMOX_TEMPLATE_FILE}"; then
+                templates+=("${name}:vztmpl/${PROXMOX_TEMPLATE_FILE}")
+                labels+=("${name} (${type})")
+            fi
+        done < <(pvesm status --content vztmpl 2>/dev/null \
+            | awk 'NR>1 {printf "%s|%s|%s\n", $1, $2, ($3=="active"?"1":"0")}')
+    fi
+
+    if [[ ${#templates[@]} -eq 0 ]]; then
+        err "No Debian LXC template found. Download ${PROXMOX_TEMPLATE_FILE} to an active template storage, set --image-storage to a storage with Debian templates, or pass --template <storage:vztmpl/file.tar.zst>."
     fi
 
     if [[ ${#templates[@]} -eq 1 ]]; then
@@ -34,7 +64,7 @@ select_template() {
         return
     fi
 
-    prompt_choice "Select container-template storage for ${template_file}" "${labels[@]}"
+    prompt_choice "Select Debian template for Wolf CT" "${labels[@]}"
     TEMPLATE="${templates[$CHOICE_IDX]}"
     info "Selected template: ${TEMPLATE}"
 }
@@ -105,6 +135,9 @@ proxmox_main() {
         detect_network
     fi
 
+    resolve_template
+    [[ "$CT_STORAGE" == "auto" ]] && select_storage
+
     select_gpu
     ensure_nvidia_modules_loaded
 
@@ -116,10 +149,8 @@ proxmox_main() {
     echo "  RAM:     ${CT_RAM} MB"
     echo "  Disk:    ${CT_DISK} GB"
     echo "  Storage: ${CT_STORAGE}"
+    echo "  Template: ${TEMPLATE}"
     echo ""
-
-    [[ "$CT_STORAGE" == "auto" ]] && select_storage
-    [[ "$TEMPLATE" == "auto" ]] && select_template
 
     # Create container
     if ! pct status "$CTID" &>/dev/null; then

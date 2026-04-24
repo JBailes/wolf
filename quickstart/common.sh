@@ -19,8 +19,8 @@
 : "${APPDATA:=/mnt/user/appdata/wolf}"
 : "${ZFS_POOL:=auto}"
 
-: "${IMAGE_STORAGE:=isos}"
-: "${TEMPLATE:=${IMAGE_STORAGE}:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst}"
+: "${PROXMOX_TEMPLATE_FILE:=debian-13-standard_13.1-2_amd64.tar.zst}"
+: "${TEMPLATE:=auto}"
 : "${LAN_BRIDGE:=vmbr0}"
 
 # =========================================================================

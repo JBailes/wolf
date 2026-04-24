@@ -8,6 +8,7 @@ lxc_main() {
     [[ $EUID -eq 0 ]] || err "Run as root"
 
     select_gpu
+    ensure_nvidia_modules_loaded
 
     info "Wolf Cloud Gaming Setup (LXC)"
     echo "  Name:  ${LXC_NAME}"

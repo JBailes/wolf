@@ -10,13 +10,14 @@
 _write_wolf_quadlet() {
     local nvidia_devices="" nvidia_volumes="" nvidia_env=""
     if [[ "$SELECTED_VENDOR" == "NVIDIA" ]]; then
-        nvidia_devices="AddDevice=/dev/nvidia-uvm
-AddDevice=/dev/nvidia-uvm-tools
-AddDevice=/dev/nvidia-caps/nvidia-cap1
-AddDevice=/dev/nvidia-caps/nvidia-cap2
-AddDevice=/dev/nvidiactl
-AddDevice=/dev/nvidia0
-AddDevice=/dev/nvidia-modeset"
+        local dev
+        for dev in /dev/nvidia-uvm /dev/nvidia-uvm-tools \
+                   /dev/nvidiactl /dev/nvidia0 /dev/nvidia-modeset; do
+            [[ -c "$dev" ]] && nvidia_devices+="AddDevice=${dev}"$'\n'
+        done
+        for dev in /dev/nvidia-caps/nvidia-cap1 /dev/nvidia-caps/nvidia-cap2; do
+            [[ -e "$dev" ]] && nvidia_devices+="AddDevice=${dev}"$'\n'
+        done
         nvidia_volumes="Volume=nvidia-driver-vol:/usr/nvidia"
         nvidia_env="Environment=NVIDIA_DRIVER_VOLUME_NAME=nvidia-driver-vol"
     fi
@@ -97,6 +98,7 @@ podman_main() {
     [[ $EUID -eq 0 ]] || err "Run as root"
 
     select_gpu
+    ensure_nvidia_modules_loaded
 
     info "Wolf Cloud Gaming Setup (Podman Quadlet)"
     echo "  GPU:  $(selected_gpu_label)"

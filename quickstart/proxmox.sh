@@ -7,6 +7,38 @@
 # Storage selection
 # =========================================================================
 
+select_template() {
+    local template_file="${PROXMOX_TEMPLATE_FILE}"
+    local templates=()
+    local labels=()
+
+    while IFS='|' read -r name type enabled; do
+        [[ "$enabled" == "1" ]] || continue
+
+        if pvesm list "$name" --content vztmpl 2>/dev/null \
+            | awk 'NR>1 {print $1}' \
+            | grep -Fxq "${name}:vztmpl/${template_file}"; then
+            templates+=("${name}:vztmpl/${template_file}")
+            labels+=("${name} (${type})")
+        fi
+    done < <(pvesm status --content vztmpl 2>/dev/null \
+        | awk 'NR>1 {printf "%s|%s|%s\n", $1, $2, ($3=="active"?"1":"0")}')
+
+    if [[ ${#templates[@]} -eq 0 ]]; then
+        err "Could not find ${template_file} on any active Proxmox container-template storage"
+    fi
+
+    if [[ ${#templates[@]} -eq 1 ]]; then
+        TEMPLATE="${templates[0]}"
+        info "Using template: ${TEMPLATE}"
+        return
+    fi
+
+    prompt_choice "Select container-template storage for ${template_file}" "${labels[@]}"
+    TEMPLATE="${templates[$CHOICE_IDX]}"
+    info "Selected template: ${TEMPLATE}"
+}
+
 select_storage() {
     local storages=()
     local labels=()
@@ -86,6 +118,7 @@ proxmox_main() {
     echo ""
 
     [[ "$CT_STORAGE" == "auto" ]] && select_storage
+    [[ "$TEMPLATE" == "auto" ]] && select_template
 
     # Create container
     if ! pct status "$CTID" &>/dev/null; then

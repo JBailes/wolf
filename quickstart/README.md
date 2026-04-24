@@ -55,7 +55,7 @@ After setup, **Steam** is pre-configured as a launchable app in Moonlight. You c
 
 ### Proxmox only (extra requirement)
 
-- **A Debian 13 LXC template** downloaded in Proxmox (the script expects `debian-13-standard_13.1-2_amd64.tar.zst` in your ISO storage)
+- **A Debian 13 LXC template** downloaded in Proxmox. The script automatically searches your active container-template storages for `debian-13-standard_13.1-2_amd64.tar.zst`.
 
 ### How to check if your GPU driver is loaded
 

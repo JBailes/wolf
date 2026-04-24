@@ -110,6 +110,7 @@ truenas_main() {
         || err "midclt not found. This script supports TrueNAS SCALE only (not TrueNAS CORE)."
 
     select_gpu
+    ensure_nvidia_modules_loaded
 
     # Resolve appdata path: if --appdata was not explicitly set, derive from pool
     if [[ "$APPDATA" == "/mnt/user/appdata/wolf" ]]; then

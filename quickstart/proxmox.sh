@@ -74,6 +74,7 @@ proxmox_main() {
     fi
 
     select_gpu
+    ensure_nvidia_modules_loaded
 
     info "Wolf Cloud Gaming Setup (Proxmox)"
     echo "  CTID:    ${CTID}"

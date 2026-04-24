@@ -324,6 +324,16 @@ clean_lxc_gpu_config() {
     fi
 }
 
+ensure_nvidia_modules_loaded() {
+    [[ "$SELECTED_VENDOR" == "NVIDIA" ]] || return 0
+    command -v modprobe &>/dev/null || return 0
+
+    local module
+    for module in nvidia nvidia_modeset nvidia_uvm; do
+        modprobe "$module" 2>/dev/null || true
+    done
+}
+
 # =========================================================================
 # Docker compose generation
 # =========================================================================
@@ -337,6 +347,20 @@ write_compose() {
         AMD|Intel) _write_compose_standard "$render_node" ;;
         *)       err "Unsupported GPU vendor: $vendor" ;;
     esac
+}
+
+_nvidia_compose_devices_block() {
+    local indent="${1:-      }"
+    local dev
+
+    for dev in /dev/nvidia-uvm /dev/nvidia-uvm-tools \
+               /dev/nvidiactl /dev/nvidia0 /dev/nvidia-modeset; do
+        [[ -c "$dev" ]] && printf '%s- %s\n' "$indent" "$dev"
+    done
+
+    for dev in /dev/nvidia-caps/nvidia-cap1 /dev/nvidia-caps/nvidia-cap2; do
+        [[ -e "$dev" ]] && printf '%s- %s\n' "$indent" "$dev"
+    done
 }
 
 _write_compose_standard() {
@@ -386,6 +410,8 @@ YAML
 
 _write_compose_nvidia() {
     local render_node="$1"
+    local nvidia_devices
+    nvidia_devices="$(_nvidia_compose_devices_block)"
     cat > /opt/wolf/docker-compose.yml <<YAML
 services:
   wolf:
@@ -407,13 +433,7 @@ services:
       - /dev/dri
       - /dev/uinput
       - /dev/uhid
-      - /dev/nvidia-uvm
-      - /dev/nvidia-uvm-tools
-      - /dev/nvidia-caps/nvidia-cap1
-      - /dev/nvidia-caps/nvidia-cap2
-      - /dev/nvidiactl
-      - /dev/nvidia0
-      - /dev/nvidia-modeset
+${nvidia_devices}
     device_cgroup_rules:
       - 'c 13:* rmw'
     network_mode: host
@@ -450,6 +470,8 @@ write_compose_paths() {
 
     case "$vendor" in
         NVIDIA)
+            local nvidia_devices
+            nvidia_devices="$(_nvidia_compose_devices_block)"
             cat > "$compose_file" <<YAML
 services:
   wolf:
@@ -472,13 +494,7 @@ services:
       - /dev/dri
       - /dev/uinput
       - /dev/uhid
-      - /dev/nvidia-uvm
-      - /dev/nvidia-uvm-tools
-      - /dev/nvidia-caps/nvidia-cap1
-      - /dev/nvidia-caps/nvidia-cap2
-      - /dev/nvidiactl
-      - /dev/nvidia0
-      - /dev/nvidia-modeset
+${nvidia_devices}
     device_cgroup_rules:
       - 'c 13:* rmw'
     network_mode: host

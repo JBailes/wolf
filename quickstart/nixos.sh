@@ -101,6 +101,13 @@ NIXEOF
 # Generate the NVIDIA Wolf OCI container config.
 _write_nix_nvidia() {
     local render_node="$1" output="$2"
+    local nvidia_devices=()
+    local dev
+
+    for dev in /dev/nvidia0 /dev/nvidiactl /dev/nvidia-modeset \
+               /dev/nvidia-uvm /dev/nvidia-uvm-tools; do
+        [[ -c "$dev" ]] && nvidia_devices+=( "        \"--device=${dev}\"" )
+    done
 
     cat > "$output" <<'NIXEOF'
 # wolf.nix -- Wolf cloud gaming NixOS module (NVIDIA)
@@ -182,11 +189,7 @@ NIXEOF
         "--device=/dev/dri"
         "--device=/dev/uinput"
         "--device=/dev/uhid"
-        "--device=/dev/nvidia0"
-        "--device=/dev/nvidiactl"
-        "--device=/dev/nvidia-modeset"
-        "--device=/dev/nvidia-uvm"
-        "--device=/dev/nvidia-uvm-tools"
+$(printf '%s\n' "${nvidia_devices[@]}")
         "--device-cgroup-rule=c 13:* rmw"
       ];
     };

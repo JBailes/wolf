@@ -8,6 +8,7 @@ docker_main() {
     [[ $EUID -eq 0 ]] || err "Run as root"
 
     select_gpu
+    ensure_nvidia_modules_loaded
 
     info "Wolf Cloud Gaming Setup (Docker)"
     echo "  GPU:  $(selected_gpu_label)"

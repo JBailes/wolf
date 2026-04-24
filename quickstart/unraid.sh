@@ -43,6 +43,7 @@ unraid_main() {
     command -v docker &>/dev/null || err "Docker is not available. Enable Docker in Unraid Settings > Docker."
 
     select_gpu
+    ensure_nvidia_modules_loaded
 
     local cfg_dir="${APPDATA}/cfg"
     local wolf_den_dir="${APPDATA}/wolf-den"

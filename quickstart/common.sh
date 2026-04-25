@@ -150,6 +150,7 @@ detect_nvidia_version() {
 # Build NVIDIA driver volume. Usage: build_nvidia_volume <docker|podman>
 build_nvidia_volume() {
     local tool="$1"
+    local -a build_cmd
 
     [[ -z "${NV_VERSION:-}" ]] && detect_nvidia_version
     info "NVIDIA driver version: ${NV_VERSION}"
@@ -160,8 +161,17 @@ build_nvidia_volume() {
     fi
 
     info "Building NVIDIA driver volume (this may take a few minutes)..."
+    if [[ "$tool" == "docker" ]]; then
+        if ! docker buildx version &>/dev/null; then
+            err "Docker buildx is required to build the NVIDIA driver volume. Install the Docker buildx plugin and rerun the quickstart."
+        fi
+        build_cmd=(docker buildx build --load)
+    else
+        build_cmd=("$tool" build)
+    fi
+
     curl -fsSL https://raw.githubusercontent.com/games-on-whales/gow/master/images/nvidia-driver/Dockerfile \
-        | "$tool" build -t gow/nvidia-driver:latest -f - --build-arg NV_VERSION="${NV_VERSION}" .
+        | "${build_cmd[@]}" -t gow/nvidia-driver:latest -f - --build-arg NV_VERSION="${NV_VERSION}" .
 
     if [[ "$tool" == "podman" ]]; then
         local tmp_ctr

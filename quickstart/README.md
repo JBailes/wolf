@@ -46,6 +46,7 @@ After setup, **Steam** is pre-configured as a launchable app in Moonlight. You c
   - **Intel** -- usually works out of the box (driver loads automatically)
   - **AMD** -- usually works out of the box (driver loads automatically)
   - **NVIDIA** -- you must install the proprietary NVIDIA driver yourself first
+- **If using Docker with an NVIDIA GPU** -- Docker's `buildx` plugin must be installed, because the quickstart builds an NVIDIA driver helper image locally
 - **Root access** -- you need to run the script as root (using `sudo`)
 
 ### On the client (the device you want to play on)

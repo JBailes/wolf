@@ -27,28 +27,36 @@ _write_nix_standard() {
 
 { config, pkgs, ... }:
 
+let
+  wolfBaseDir = "/etc/wolf"; # No trailing slash
+in
 {
   # Enable Docker (used by Wolf to launch game containers)
   virtualisation.docker.enable = true;
 
   # Udev rules for Wolf virtual input devices
   services.udev.extraRules = ''
+    # Allows Wolf to acces /dev/uinput (only needed for joypad support)
     KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput", TAG+="uaccess"
+    
+    # Allows Wolf to access /dev/uhid (only needed for DualSense emulation)
     KERNEL=="uhid", GROUP="input", MODE="0660", TAG+="uaccess"
-    KERNEL=="hidraw*", ATTRS{name}=="Wolf PS5 (virtual) pad", GROUP="input", MODE="0660", ENV{ID_SEAT}="seat9"
-    SUBSYSTEMS=="input", ATTRS{name}=="Wolf X-Box One (virtual) pad", MODE="0660", ENV{ID_SEAT}="seat9"
-    SUBSYSTEMS=="input", ATTRS{name}=="Wolf PS5 (virtual) pad", MODE="0660", ENV{ID_SEAT}="seat9"
-    SUBSYSTEMS=="input", ATTRS{name}=="Wolf gamepad (virtual) motion sensors", MODE="0660", ENV{ID_SEAT}="seat9"
-    SUBSYSTEMS=="input", ATTRS{name}=="Wolf Nintendo (virtual) pad", MODE="0660", ENV{ID_SEAT}="seat9"
+
+    # Joypads
+    KERNEL=="hidraw*",   ATTRS{name}=="Wolf PS5 (virtual) pad", GROUP="root", MODE="0660", ENV{ID_SEAT}="seat9"
+    SUBSYSTEMS=="input", ATTRS{name}=="Wolf X-Box One (virtual) pad", GROUP="root", MODE="0660", ENV{ID_SEAT}="seat9"
+    SUBSYSTEMS=="input", ATTRS{name}=="Wolf PS5 (virtual) pad", GROUP="root", MODE="0660", ENV{ID_SEAT}="seat9"
+    SUBSYSTEMS=="input", ATTRS{name}=="Wolf gamepad (virtual) motion sensors", GROUP="root", MODE="0660", ENV{ID_SEAT}="seat9"
+    SUBSYSTEMS=="input", ATTRS{name}=="Wolf Nintendo (virtual) pad", GROUP="root", MODE="0660", ENV{ID_SEAT}="seat9"
   '';
 
   # Persistent directories for Wolf data
   systemd.tmpfiles.rules = [
-    "d /etc/wolf 0755 root root -"
-    "d /etc/wolf/cfg 0755 root root -"
-    "d /etc/wolf/wolf-den 0755 root root -"
-    "d /etc/wolf/covers 0755 root root -"
-    "d /etc/wolf/steam 0755 root root -"
+    "d \${wolfBaseDir} 0755 root root -"
+    "d \${wolfBaseDir}/cfg 0755 root root -"
+    "d \${wolfBaseDir}/wolf-den 0755 root root -"
+    "d \${wolfBaseDir}/covers 0755 root root -"
+    "d \${wolfBaseDir}/steam 0755 root root -"
   ];
 
 NIXEOF
@@ -60,15 +68,26 @@ NIXEOF
   virtualisation.oci-containers.containers = {
     wolf = {
       image = "ghcr.io/games-on-whales/wolf:stable";
-      environment = {
+      environment = let
+        wolfPortBase = 47989; # Custom port for Moonlight connection
+        wolfPort = offset: builtins.toString (wolfPortBase + offset);
+      in
+      {
         WOLF_RENDER_NODE = "${render_node}";
-        XDG_RUNTIME_DIR = "/tmp/sockets";
         WOLF_CFG_FILE = "/etc/wolf/cfg/config.toml";
         WOLF_DOCKER_SOCKET = "/var/run/docker.sock";
+        WOLF_SOCKET_PATH = "/var/run/wolf/wolf.sock";
+        WOLF_HTTPS_PORT= wolfPort (-5);
+        WOLF_HTTP_PORT= wolfPort 0;
+        WOLF_CONTROL_PORT= wolfPort 10;
+        WOLF_RTSP_SETUP_PORT= wolfPort 21;
+        WOLF_VIDEO_PING_PORT= wolfPort 111;
+        WOLF_AUDIO_PING_PORT= wolfPort 211;
       };
       volumes = [
-        "/etc/wolf:/etc/wolf:rw"
-        "/var/run/docker.sock:/var/run/docker.sock:rw"
+        "\${wolfBaseDir}:/etc/wolf:rw"
+        "/var/run/docker.sock:/var/run/docker.sock:rw"        
+        "/var/run/wolf:/var/run/wolf:rw"
         "/dev/:/dev/:rw"
         "/run/udev:/run/udev:rw"
       ];
@@ -84,11 +103,12 @@ NIXEOF
     wolf-den = {
       image = "ghcr.io/games-on-whales/wolf-den:stable";
       environment = {
-        WOLF_SOCKET_PATH = "/tmp/sockets/wolf.sock";
+        WOLF_SOCKET_PATH = "/var/run/wolf/wolf.sock";
       };
       volumes = [
-        "/etc/wolf/wolf-den:/app/wolf-den"
-        "/etc/wolf/covers:/etc/wolf/covers"
+        "\${wolfBaseDir}/wolf-den:/app/wolf-den"
+        "\${wolfBaseDir}/covers:/etc/wolf/covers"
+        "/var/run/wolf:/var/run/wolf:rw"
       ];
       ports = [ "8080:8080" ];
       dependsOn = [ "wolf" ];
@@ -136,6 +156,7 @@ let
     # NVENC hardware encoding. Not included in the driver .run file.
     extraLibs = [ pkgs.cudaPackages.cuda_nvrtc.lib ];
   };
+  wolfBaseDir = "/etc/wolf"; # No trailing slash
 in
 {
   # Enable Docker (used by Wolf to launch game containers)
@@ -143,22 +164,27 @@ in
 
   # Udev rules for Wolf virtual input devices
   services.udev.extraRules = ''
+    # Allows Wolf to acces /dev/uinput (only needed for joypad support)
     KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput", TAG+="uaccess"
+    
+    # Allows Wolf to access /dev/uhid (only needed for DualSense emulation)
     KERNEL=="uhid", GROUP="input", MODE="0660", TAG+="uaccess"
-    KERNEL=="hidraw*", ATTRS{name}=="Wolf PS5 (virtual) pad", GROUP="input", MODE="0660", ENV{ID_SEAT}="seat9"
-    SUBSYSTEMS=="input", ATTRS{name}=="Wolf X-Box One (virtual) pad", MODE="0660", ENV{ID_SEAT}="seat9"
-    SUBSYSTEMS=="input", ATTRS{name}=="Wolf PS5 (virtual) pad", MODE="0660", ENV{ID_SEAT}="seat9"
-    SUBSYSTEMS=="input", ATTRS{name}=="Wolf gamepad (virtual) motion sensors", MODE="0660", ENV{ID_SEAT}="seat9"
-    SUBSYSTEMS=="input", ATTRS{name}=="Wolf Nintendo (virtual) pad", MODE="0660", ENV{ID_SEAT}="seat9"
+
+    # Joypads
+    KERNEL=="hidraw*",   ATTRS{name}=="Wolf PS5 (virtual) pad", GROUP="root", MODE="0660", ENV{ID_SEAT}="seat9"
+    SUBSYSTEMS=="input", ATTRS{name}=="Wolf X-Box One (virtual) pad", GROUP="root", MODE="0660", ENV{ID_SEAT}="seat9"
+    SUBSYSTEMS=="input", ATTRS{name}=="Wolf PS5 (virtual) pad", GROUP="root", MODE="0660", ENV{ID_SEAT}="seat9"
+    SUBSYSTEMS=="input", ATTRS{name}=="Wolf gamepad (virtual) motion sensors", GROUP="root", MODE="0660", ENV{ID_SEAT}="seat9"
+    SUBSYSTEMS=="input", ATTRS{name}=="Wolf Nintendo (virtual) pad", GROUP="root", MODE="0660", ENV{ID_SEAT}="seat9"
   '';
 
   # Persistent directories for Wolf data
   systemd.tmpfiles.rules = [
-    "d /etc/wolf 0755 root root -"
-    "d /etc/wolf/cfg 0755 root root -"
-    "d /etc/wolf/wolf-den 0755 root root -"
-    "d /etc/wolf/covers 0755 root root -"
-    "d /etc/wolf/steam 0755 root root -"
+    "d \${wolfBaseDir} 0755 root root -"
+    "d \${wolfBaseDir}/cfg 0755 root root -"
+    "d \${wolfBaseDir}/wolf-den 0755 root root -"
+    "d \${wolfBaseDir}/covers 0755 root root -"
+    "d \${wolfBaseDir}/steam 0755 root root -"
   ];
 
 NIXEOF
@@ -170,16 +196,26 @@ NIXEOF
   virtualisation.oci-containers.containers = {
     wolf = {
       image = "ghcr.io/games-on-whales/wolf:stable";
-      environment = {
+      environment = let
+        wolfPortBase = 47989; # Custom port for Moonlight connection
+        wolfPort = offset: builtins.toString (wolfPortBase + offset);
+      in
         WOLF_RENDER_NODE = "${render_node}";
         NVIDIA_DRIVER_VOLUME_NAME = "\${wolfNvidiaVol}";
-        XDG_RUNTIME_DIR = "/tmp/sockets";
         WOLF_CFG_FILE = "/etc/wolf/cfg/config.toml";
         WOLF_DOCKER_SOCKET = "/var/run/docker.sock";
+        WOLF_SOCKET_PATH = "/var/run/wolf/wolf.sock";
+        WOLF_HTTPS_PORT= wolfPort (-5);
+        WOLF_HTTP_PORT= wolfPort 0;
+        WOLF_CONTROL_PORT= wolfPort 10;
+        WOLF_RTSP_SETUP_PORT= wolfPort 21;
+        WOLF_VIDEO_PING_PORT= wolfPort 111;
+        WOLF_AUDIO_PING_PORT= wolfPort 211;
       };
       volumes = [
-        "/etc/wolf:/etc/wolf:rw"
+        "\${wolfBaseDir}:/etc/wolf:rw"
         "/var/run/docker.sock:/var/run/docker.sock:rw"
+        "/var/run/wolf:/var/run/wolf:rw"
         "/dev/:/dev/:rw"
         "/run/udev:/run/udev:rw"
         "\${wolfNvidiaVol}:/usr/nvidia:ro"
@@ -197,11 +233,12 @@ $(printf '%s\n' "${nvidia_devices[@]}")
     wolf-den = {
       image = "ghcr.io/games-on-whales/wolf-den:stable";
       environment = {
-        WOLF_SOCKET_PATH = "/tmp/sockets/wolf.sock";
+        WOLF_SOCKET_PATH = "/var/run/wolf/wolf.sock";
       };
       volumes = [
-        "/etc/wolf/wolf-den:/app/wolf-den"
-        "/etc/wolf/covers:/etc/wolf/covers"
+        "\${wolfBaseDir}/wolf-den:/app/wolf-den"
+        "\${wolfBaseDir}/covers:/etc/wolf/covers"
+        "/var/run/wolf:/var/run/wolf:rw"
       ];
       ports = [ "8080:8080" ];
       dependsOn = [ "wolf" ];

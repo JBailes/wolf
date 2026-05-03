@@ -173,8 +173,36 @@ build_nvidia_volume() {
         build_cmd=("$tool" build)
     fi
 
-    curl -fsSL https://raw.githubusercontent.com/games-on-whales/gow/master/images/nvidia-driver/Dockerfile \
-        | "${build_cmd[@]}" -t gow/nvidia-driver:latest -f - --build-arg NV_VERSION="${NV_VERSION}" .
+    "${build_cmd[@]}" -t gow/nvidia-driver:latest -f - \
+            --build-arg "NV_VERSION=${NV_VERSION}" . <<'DOCKERFILE'
+FROM fedora:43 AS nvidia-installer
+
+ARG NV_VERSION
+RUN dnf install -y --setopt=install_weak_deps=False \
+        curl kmod libglvnd-devel pkg-config && \
+    curl -fLO "https://download.nvidia.com/XFree86/Linux-x86_64/${NV_VERSION}/NVIDIA-Linux-x86_64-${NV_VERSION}.run" && \
+    chmod +x "NVIDIA-Linux-x86_64-${NV_VERSION}.run" && \
+    mkdir -p /usr/nvidia && \
+    "./NVIDIA-Linux-x86_64-${NV_VERSION}.run" --silent -z \
+        --skip-depmod --skip-module-unload \
+        --no-nvidia-modprobe --no-kernel-modules --no-kernel-module-source \
+        --opengl-prefix=/usr/nvidia \
+        --wine-prefix=/usr/nvidia \
+        --utility-prefix=/usr/nvidia --utility-libdir=lib \
+        --compat32-prefix=/usr/nvidia --compat32-libdir=lib32 \
+        --egl-external-platform-config-path=/usr/nvidia/share/egl/egl_external_platform.d \
+        --glvnd-egl-config-path=/usr/nvidia/share/glvnd/egl_vendor.d \
+        --no-distro-scripts && \
+    rm "NVIDIA-Linux-x86_64-${NV_VERSION}.run"
+
+RUN printf '/usr/nvidia/lib\n/usr/nvidia/lib32\n' > /etc/ld.so.conf.d/nvidia.conf && ldconfig
+
+FROM scratch
+
+COPY --from=nvidia-installer /usr/nvidia/ /usr/nvidia
+COPY --from=nvidia-installer /etc/vulkan/icd.d/nvidia_icd.json /usr/nvidia/share/vulkan/icd.d/
+COPY --from=nvidia-installer /bin/sh /bin/sh
+DOCKERFILE
 
     if [[ "$tool" == "podman" ]]; then
         local tmp_ctr
@@ -306,9 +334,19 @@ EOF
 
     case "$SELECTED_VENDOR" in
         NVIDIA)
+            # Detect dynamic major numbers — these vary by kernel/driver version.
+            local uvm_major caps_major
+            uvm_major=$(printf '%d' "0x$(stat -c '%t' /dev/nvidia-uvm 2>/dev/null)") || uvm_major=""
+            caps_major=$(printf '%d' "0x$(stat -c '%t' /dev/nvidia-caps/nvidia-cap1 2>/dev/null)") || caps_major=""
+
             cat >> "$conf" <<EOF
 lxc.cgroup2.devices.allow${sep} c 195:* rwm
-lxc.cgroup2.devices.allow${sep} c 507:* rwm
+EOF
+            [[ -n "$uvm_major" ]] \
+                && printf 'lxc.cgroup2.devices.allow%s c %d:* rwm\n' "$sep" "$uvm_major" >> "$conf"
+            [[ -n "$caps_major" ]] \
+                && printf 'lxc.cgroup2.devices.allow%s c %d:* rwm\n' "$sep" "$caps_major" >> "$conf"
+            cat >> "$conf" <<EOF
 lxc.mount.entry${sep} /dev/nvidia0 dev/nvidia0 none bind,optional,create=file
 lxc.mount.entry${sep} /dev/nvidiactl dev/nvidiactl none bind,optional,create=file
 lxc.mount.entry${sep} /dev/nvidia-modeset dev/nvidia-modeset none bind,optional,create=file
@@ -337,6 +375,58 @@ clean_lxc_gpu_config() {
     fi
 }
 
+install_nvidia_userspace_driver() {
+    local nv_version="$1"
+
+    if ldconfig -p 2>/dev/null | grep -q "libnvidia-ml.so.${nv_version}"; then
+        info "NVIDIA userspace driver ${nv_version} already installed"
+        return
+    fi
+
+    info "Installing NVIDIA ${nv_version} userspace driver (no kernel modules)"
+    local installer="NVIDIA-Linux-x86_64-${nv_version}.run"
+    local installer_path="/tmp/${installer}"
+
+    if [[ ! -f "$installer_path" ]]; then
+        curl -fL -o "$installer_path" \
+            "https://download.nvidia.com/XFree86/Linux-x86_64/${nv_version}/${installer}"
+    fi
+
+    chmod +x "$installer_path"
+    DEBIAN_FRONTEND=noninteractive "$installer_path" \
+        --silent \
+        --no-kernel-modules \
+        --no-kernel-module-source \
+        --no-check-for-alternate-installs \
+        --skip-module-unload \
+        --skip-depmod \
+        --no-nvidia-modprobe \
+        --no-distro-scripts
+
+    rm -f "$installer_path"
+    info "NVIDIA userspace driver ${nv_version} installed"
+}
+
+install_nvidia_container_toolkit() {
+    if command -v nvidia-ctk &>/dev/null; then
+        info "NVIDIA Container Toolkit already installed"
+    else
+        info "Installing NVIDIA Container Toolkit"
+        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+            | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+        curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+            | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+            > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+        apt-get update -qq
+        apt-get install -y --no-install-recommends nvidia-container-toolkit
+        info "NVIDIA Container Toolkit installed"
+    fi
+
+    nvidia-ctk runtime configure --runtime=docker --set-as-default
+    systemctl restart docker
+    info "Docker configured to use NVIDIA runtime"
+}
+
 ensure_nvidia_modules_loaded() {
     [[ "$SELECTED_VENDOR" == "NVIDIA" ]] || return 0
     command -v modprobe &>/dev/null || return 0
@@ -345,6 +435,11 @@ ensure_nvidia_modules_loaded() {
     for module in nvidia nvidia_modeset nvidia_uvm; do
         modprobe "$module" 2>/dev/null || true
     done
+    modprobe nvidia_drm modeset=1 2>/dev/null || true
+
+    # nvidia-modprobe creates /dev/nvidia-modeset and /dev/nvidia-caps/* which
+    # the kernel driver does not create automatically via udev on bare installs.
+    command -v nvidia-modprobe &>/dev/null && nvidia-modprobe -m 2>/dev/null || true
 }
 
 # =========================================================================
@@ -360,20 +455,6 @@ write_compose() {
         AMD|Intel) _write_compose_standard "$render_node" ;;
         *)       err "Unsupported GPU vendor: $vendor" ;;
     esac
-}
-
-_nvidia_compose_devices_block() {
-    local indent="${1:-      }"
-    local dev
-
-    for dev in /dev/nvidia-uvm /dev/nvidia-uvm-tools \
-               /dev/nvidiactl /dev/nvidia0 /dev/nvidia-modeset; do
-        [[ -c "$dev" ]] && printf '%s- %s\n' "$indent" "$dev"
-    done
-
-    for dev in /dev/nvidia-caps/nvidia-cap1 /dev/nvidia-caps/nvidia-cap2; do
-        [[ -e "$dev" ]] && printf '%s- %s\n' "$indent" "$dev"
-    done
 }
 
 _write_compose_standard() {
@@ -423,30 +504,29 @@ YAML
 
 _write_compose_nvidia() {
     local render_node="$1"
-    local nvidia_devices
-    nvidia_devices="$(_nvidia_compose_devices_block)"
     cat > /opt/wolf/docker-compose.yml <<YAML
 services:
   wolf:
     image: ghcr.io/games-on-whales/wolf:stable
+    runtime: nvidia
     environment:
       - WOLF_RENDER_NODE=${render_node}
-      - NVIDIA_DRIVER_VOLUME_NAME=nvidia-driver-vol
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
       - XDG_RUNTIME_DIR=/tmp/sockets
       - WOLF_CFG_FILE=/etc/wolf/cfg/config.toml
       - WOLF_DOCKER_SOCKET=/var/run/docker.sock
+      - WOLF_PULSE_IMAGE=ghcr.io/games-on-whales/pulseaudio:fedora-43
     volumes:
       - /etc/wolf:/etc/wolf:rw
       - /var/run/docker.sock:/var/run/docker.sock:rw
       - /dev/:/dev/:rw
       - /run/udev:/run/udev:rw
-      - nvidia-driver-vol:/usr/nvidia:rw
       - wolf-socket:/tmp/sockets
     devices:
       - /dev/dri
       - /dev/uinput
       - /dev/uhid
-${nvidia_devices}
     device_cgroup_rules:
       - 'c 13:* rmw'
     network_mode: host
@@ -467,8 +547,6 @@ ${nvidia_devices}
       - wolf
 
 volumes:
-  nvidia-driver-vol:
-    external: true
   wolf-socket:
 YAML
 }
@@ -483,31 +561,30 @@ write_compose_paths() {
 
     case "$vendor" in
         NVIDIA)
-            local nvidia_devices
-            nvidia_devices="$(_nvidia_compose_devices_block)"
             cat > "$compose_file" <<YAML
 services:
   wolf:
     image: ghcr.io/games-on-whales/wolf:stable
+    runtime: nvidia
     environment:
       - WOLF_RENDER_NODE=${render_node}
-      - NVIDIA_DRIVER_VOLUME_NAME=nvidia-driver-vol
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
       - XDG_RUNTIME_DIR=/tmp/sockets
       - WOLF_CFG_FILE=/etc/wolf/cfg/config.toml
       - WOLF_DOCKER_SOCKET=/var/run/docker.sock
+      - WOLF_PULSE_IMAGE=ghcr.io/games-on-whales/pulseaudio:fedora-43
     volumes:
       - ${wolf_cfg}:/etc/wolf/cfg:rw
       - ${steam}:/etc/wolf/steam:rw
       - /var/run/docker.sock:/var/run/docker.sock:rw
       - /dev/:/dev/:rw
       - /run/udev:/run/udev:rw
-      - nvidia-driver-vol:/usr/nvidia:rw
       - wolf-socket:/tmp/sockets
     devices:
       - /dev/dri
       - /dev/uinput
       - /dev/uhid
-${nvidia_devices}
     device_cgroup_rules:
       - 'c 13:* rmw'
     network_mode: host
@@ -528,8 +605,6 @@ ${nvidia_devices}
       - wolf
 
 volumes:
-  nvidia-driver-vol:
-    external: true
   wolf-socket:
 YAML
             ;;
@@ -611,7 +686,7 @@ start_virtual_compositor = true
 [profiles.apps.runner]
 type = "docker"
 name = "WolfSteam"
-image = "ghcr.io/games-on-whales/steam:edge"
+image = "ghcr.io/games-on-whales/steam:fedora-43"
 mounts = ["/etc/wolf/steam:/home/retro:rw"]
 env = ["PROTON_LOG=1", "RUN_SWAY=true"]
 TOML

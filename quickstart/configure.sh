@@ -50,15 +50,16 @@ https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_C
     write_compose "$gpu_vendor" "$render_node"
 
     if [[ "$gpu_vendor" == "NVIDIA" ]]; then
-        info "Preparing NVIDIA driver volume"
+        local nv_version
         if [[ -n "${WOLF_NV_VERSION:-}" ]]; then
-            NV_VERSION="$WOLF_NV_VERSION"
-            info "Using host NVIDIA driver version: ${NV_VERSION}"
+            nv_version="$WOLF_NV_VERSION"
         else
             warn "Host NVIDIA driver version was not passed into the container; attempting local detection"
             detect_nvidia_version
+            nv_version="$NV_VERSION"
         fi
-        build_nvidia_volume docker
+        install_nvidia_userspace_driver "$nv_version"
+        install_nvidia_container_toolkit
     fi
 
     docker_start_wolf

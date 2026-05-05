@@ -67,10 +67,7 @@ unraid_main() {
     write_compose_paths "$SELECTED_VENDOR" "$SELECTED_RENDER_NODE" \
         "$cfg_dir" "$wolf_den_dir" "$covers_dir" "$steam_dir" "$compose_dir"
 
-    if [[ "$SELECTED_VENDOR" == "NVIDIA" ]]; then
-        detect_nvidia_version
-        build_nvidia_volume docker
-    fi
+    [[ "$SELECTED_VENDOR" == "NVIDIA" ]] && install_nvidia_container_toolkit
 
     info "Pulling and starting Wolf + Wolf Den"
     docker compose -f "${compose_dir}/docker-compose.yml" pull

@@ -7,6 +7,7 @@ lxc_main() {
     parse_args "$@"
     [[ $EUID -eq 0 ]] || err "Run as root"
 
+    install_nvidia_host_driver
     select_gpu
     ensure_nvidia_modules_loaded
 

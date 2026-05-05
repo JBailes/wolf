@@ -17,7 +17,7 @@ docker_main() {
 
     install_udev_rules
 
-    [[ "$SELECTED_VENDOR" == "NVIDIA" ]] && build_nvidia_volume docker
+    [[ "$SELECTED_VENDOR" == "NVIDIA" ]] && install_nvidia_container_toolkit
 
     mkdir -p /etc/wolf/cfg /etc/wolf/wolf-den /etc/wolf/covers /etc/wolf/steam /opt/wolf
 

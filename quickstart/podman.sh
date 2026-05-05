@@ -8,18 +8,11 @@
 # =========================================================================
 
 _write_wolf_quadlet() {
-    local nvidia_devices="" nvidia_volumes="" nvidia_env=""
+    local nvidia_cdi=""
     if [[ "$SELECTED_VENDOR" == "NVIDIA" ]]; then
-        local dev
-        for dev in /dev/nvidia-uvm /dev/nvidia-uvm-tools \
-                   /dev/nvidiactl /dev/nvidia0 /dev/nvidia-modeset; do
-            [[ -c "$dev" ]] && nvidia_devices+="AddDevice=${dev}"$'\n'
-        done
-        for dev in /dev/nvidia-caps/nvidia-cap1 /dev/nvidia-caps/nvidia-cap2; do
-            [[ -e "$dev" ]] && nvidia_devices+="AddDevice=${dev}"$'\n'
-        done
-        nvidia_volumes="Volume=nvidia-driver-vol:/usr/nvidia"
-        nvidia_env="Environment=NVIDIA_DRIVER_VOLUME_NAME=nvidia-driver-vol"
+        nvidia_cdi="AddDevice=nvidia.com/gpu=all
+Environment=NVIDIA_VISIBLE_DEVICES=all
+Environment=NVIDIA_DRIVER_CAPABILITIES=all"
     fi
 
     cat <<QUADLET
@@ -46,8 +39,7 @@ PodmanArgs=--ipc=host --device-cgroup-rule "c 13:* rmw"
 AddDevice=/dev/dri
 AddDevice=/dev/uinput
 AddDevice=/dev/uhid
-${nvidia_devices:+${nvidia_devices}
-}${nvidia_volumes:+${nvidia_volumes}
+${nvidia_cdi:+${nvidia_cdi}
 }Volume=/dev/:/dev/:rw
 Volume=/run/udev:/run/udev:rw
 Volume=/etc/wolf/:/etc/wolf:z
@@ -55,8 +47,7 @@ Volume=/run/podman/podman.sock:/var/run/docker.sock:ro
 Volume=wolf-socket:/tmp/sockets
 Environment=WOLF_STOP_CONTAINER_ON_EXIT=TRUE
 Environment=XDG_RUNTIME_DIR=/tmp/sockets
-${nvidia_env:+${nvidia_env}
-}Environment=WOLF_RENDER_NODE=${SELECTED_RENDER_NODE}
+Environment=WOLF_RENDER_NODE=${SELECTED_RENDER_NODE}
 
 [Install]
 WantedBy=multi-user.target
@@ -110,7 +101,7 @@ podman_main() {
     info "Enabling Podman socket"
     systemctl enable --now podman.socket
 
-    [[ "$SELECTED_VENDOR" == "NVIDIA" ]] && build_nvidia_volume podman
+    [[ "$SELECTED_VENDOR" == "NVIDIA" ]] && install_nvidia_container_toolkit cdi
 
     mkdir -p /etc/wolf/wolf-den /etc/wolf/covers
     local quadlet_dir="/etc/containers/systemd"

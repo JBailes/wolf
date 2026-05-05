@@ -144,6 +144,7 @@ proxmox_main() {
     validate_template
     [[ "$CT_STORAGE" == "auto" ]] && select_storage
 
+    install_nvidia_host_driver
     select_gpu
     ensure_nvidia_modules_loaded
 

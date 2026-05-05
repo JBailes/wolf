@@ -225,6 +225,15 @@ detect_gpus() {
     GPU_VENDORS=()
     GPU_NAMES=()
 
+    # Probe nvidia_drm before scanning so NVIDIA render nodes appear in /sys/class/drm/.
+    # nvidia_drm requires modeset=1 to expose a DRM render device; without this,
+    # NVIDIA GPUs are invisible to the detector even when the driver is installed.
+    if command -v modprobe &>/dev/null && command -v modinfo &>/dev/null \
+            && modinfo nvidia &>/dev/null 2>&1; then
+        modprobe nvidia 2>/dev/null || true
+        modprobe nvidia_drm modeset=1 2>/dev/null || true
+    fi
+
     local node driver vendor name pci_slot device_dir
     for node in /sys/class/drm/renderD*/device/driver; do
         [[ -e "$node" ]] || continue
@@ -373,6 +382,69 @@ clean_lxc_gpu_config() {
         info "Removing old Wolf config"
         sed -i '/# Wolf cloud gaming/,$ d' "$conf"
     fi
+}
+
+# Install the NVIDIA kernel driver on the host if an NVIDIA GPU is present but
+# the driver is missing. Safe to call unconditionally — skips when not needed.
+install_nvidia_host_driver() {
+    # Nothing to do if already installed
+    if modinfo nvidia &>/dev/null 2>&1; then
+        info "NVIDIA host driver already installed ($(modinfo nvidia -F version 2>/dev/null || echo unknown))"
+        return
+    fi
+
+    # Only proceed if an NVIDIA display/3D GPU is actually present
+    command -v lspci &>/dev/null || return 0
+    lspci -d "10de:" | grep -qiE "VGA|3D controller|Display controller" || return 0
+
+    info "NVIDIA GPU detected; installing host kernel driver"
+    apt-get update -qq
+    apt-get install -y --no-install-recommends curl pciutils
+
+    # Blacklist nouveau so it doesn't conflict
+    if ! grep -rq "blacklist nouveau" /etc/modprobe.d/ 2>/dev/null; then
+        printf 'blacklist nouveau\noptions nouveau modeset=0\n' \
+            > /etc/modprobe.d/blacklist-nouveau.conf
+        update-initramfs -u 2>/dev/null || true
+    fi
+    rmmod nouveau 2>/dev/null || true
+
+    # Install kernel headers (Proxmox uses proxmox-headers-*, others linux-headers-*)
+    local kernel_ver
+    kernel_ver=$(uname -r)
+    if apt-cache show "proxmox-headers-${kernel_ver}" &>/dev/null 2>&1; then
+        apt-get install -y --no-install-recommends "proxmox-headers-${kernel_ver}"
+    else
+        apt-get install -y --no-install-recommends "linux-headers-${kernel_ver}"
+    fi
+
+    # Resolve latest driver version
+    local nv_version
+    nv_version=$(curl -fsSL \
+        "https://download.nvidia.com/XFree86/Linux-x86_64/latest.txt" \
+        | awk '{print $1; exit}')
+    [[ -n "$nv_version" ]] || err "Could not resolve latest NVIDIA driver version"
+    info "Installing NVIDIA host driver ${nv_version} (with DKMS)"
+
+    local installer="NVIDIA-Linux-x86_64-${nv_version}.run"
+    local installer_path="/tmp/${installer}"
+
+    if [[ ! -f "$installer_path" ]]; then
+        curl -fL -o "$installer_path" \
+            "https://download.nvidia.com/XFree86/Linux-x86_64/${nv_version}/${installer}"
+    fi
+
+    chmod +x "$installer_path"
+    DEBIAN_FRONTEND=noninteractive "$installer_path" \
+        --silent \
+        --dkms \
+        --no-opengl-files \
+        --no-nouveau-check \
+        --no-wine-files \
+        --no-distro-scripts
+
+    rm -f "$installer_path"
+    info "NVIDIA host driver ${nv_version} installed"
 }
 
 install_nvidia_userspace_driver() {

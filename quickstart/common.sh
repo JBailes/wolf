@@ -170,11 +170,11 @@ detect_gpus() {
         modprobe nvidia_drm modeset=1 2>/dev/null || true
     fi
 
-    local node driver vendor name pci_slot device_dir
+    local node driver vendor name pci_slot device_dir render_dev
     for node in /sys/class/drm/renderD*/device/driver; do
         [[ -e "$node" ]] || continue
         device_dir="$(dirname "$node")"
-        local render_dev="/dev/dri/$(basename "$(dirname "$device_dir")")"
+        render_dev="/dev/dri/$(basename "$(dirname "$device_dir")")"
         driver=$(basename "$(readlink "$node")")
 
         case "$driver" in
@@ -256,6 +256,52 @@ select_gpu() {
 # LXC GPU passthrough config (shared between Proxmox, standalone LXC, and configure)
 # =========================================================================
 
+ensure_char_device_node() {
+    local path="$1" major="$2" minor="$3"
+
+    [[ -c "$path" ]] && return 0
+    if [[ -e "$path" ]]; then
+        warn "${path} exists but is not a character device; recreating it"
+        rm -f -- "$path"
+    fi
+
+    if ! mknod -m 666 "$path" c "$major" "$minor" 2>/dev/null; then
+        warn "Could not create ${path} as character device ${major}:${minor}"
+        return 1
+    fi
+}
+
+ensure_nvidia_device_nodes() {
+    [[ "${SELECTED_VENDOR:-}" == "NVIDIA" ]] || return 0
+
+    if command -v nvidia-container-cli &>/dev/null; then
+        nvidia-container-cli --load-kmods info >/dev/null 2>&1 || true
+    fi
+    if command -v nvidia-modprobe &>/dev/null; then
+        nvidia-modprobe -m 2>/dev/null || true
+    fi
+
+    local uvm_major
+    uvm_major=$(awk '$2 == "nvidia-uvm" { print $1; exit }' /proc/devices 2>/dev/null || true)
+    [[ -n "$uvm_major" ]] || return 0
+
+    ensure_char_device_node /dev/nvidia-uvm "$uvm_major" 0 || true
+    ensure_char_device_node /dev/nvidia-uvm-tools "$uvm_major" 1 || true
+}
+
+append_lxc_device_mount() {
+    local conf="$1" sep="$2" host_path="$3" container_path="$4"
+
+    if [[ -c "$host_path" ]]; then
+        printf 'lxc.mount.entry%s %s %s none bind,optional,create=file\n' \
+            "$sep" "$host_path" "$container_path" >> "$conf"
+    elif [[ -e "$host_path" ]]; then
+        warn "${host_path} exists but is not a character device; skipping LXC mount"
+    else
+        warn "${host_path} is missing; skipping LXC mount"
+    fi
+}
+
 # Write GPU passthrough entries to an LXC config file.
 # Usage: write_lxc_gpu_config <conf_file> <separator>
 #   separator: ":" for Proxmox (lxc.key: value), "=" for standalone (lxc.key = value)
@@ -279,10 +325,16 @@ EOF
 
     case "$SELECTED_VENDOR" in
         NVIDIA)
+            ensure_nvidia_device_nodes
+
             # Detect dynamic major numbers — these vary by kernel/driver version.
             local uvm_major caps_major
-            uvm_major=$(printf '%d' "0x$(stat -c '%t' /dev/nvidia-uvm 2>/dev/null)") || uvm_major=""
-            caps_major=$(printf '%d' "0x$(stat -c '%t' /dev/nvidia-caps/nvidia-cap1 2>/dev/null)") || caps_major=""
+            if [[ -c /dev/nvidia-uvm ]]; then
+                uvm_major=$(printf '%d' "0x$(stat -c '%t' /dev/nvidia-uvm 2>/dev/null)") || uvm_major=""
+            fi
+            if [[ -c /dev/nvidia-caps/nvidia-cap1 ]]; then
+                caps_major=$(printf '%d' "0x$(stat -c '%t' /dev/nvidia-caps/nvidia-cap1 2>/dev/null)") || caps_major=""
+            fi
 
             cat >> "$conf" <<EOF
 lxc.cgroup2.devices.allow${sep} c 195:* rwm
@@ -291,14 +343,15 @@ EOF
                 && printf 'lxc.cgroup2.devices.allow%s c %d:* rwm\n' "$sep" "$uvm_major" >> "$conf"
             [[ -n "$caps_major" ]] \
                 && printf 'lxc.cgroup2.devices.allow%s c %d:* rwm\n' "$sep" "$caps_major" >> "$conf"
-            cat >> "$conf" <<EOF
-lxc.mount.entry${sep} /dev/nvidia0 dev/nvidia0 none bind,optional,create=file
-lxc.mount.entry${sep} /dev/nvidiactl dev/nvidiactl none bind,optional,create=file
-lxc.mount.entry${sep} /dev/nvidia-modeset dev/nvidia-modeset none bind,optional,create=file
-lxc.mount.entry${sep} /dev/nvidia-uvm dev/nvidia-uvm none bind,optional,create=file
-lxc.mount.entry${sep} /dev/nvidia-uvm-tools dev/nvidia-uvm-tools none bind,optional,create=file
-lxc.mount.entry${sep} /dev/nvidia-caps dev/nvidia-caps none bind,optional,create=dir
-EOF
+            append_lxc_device_mount "$conf" "$sep" /dev/nvidia0 dev/nvidia0
+            append_lxc_device_mount "$conf" "$sep" /dev/nvidiactl dev/nvidiactl
+            append_lxc_device_mount "$conf" "$sep" /dev/nvidia-modeset dev/nvidia-modeset
+            append_lxc_device_mount "$conf" "$sep" /dev/nvidia-uvm dev/nvidia-uvm
+            append_lxc_device_mount "$conf" "$sep" /dev/nvidia-uvm-tools dev/nvidia-uvm-tools
+            if [[ -d /dev/nvidia-caps ]]; then
+                printf 'lxc.mount.entry%s /dev/nvidia-caps dev/nvidia-caps none bind,optional,create=dir\n' \
+                    "$sep" >> "$conf"
+            fi
             ;;
         AMD)
             if [[ -e /dev/kfd ]]; then
@@ -462,7 +515,10 @@ ensure_nvidia_modules_loaded() {
 
     # nvidia-modprobe creates /dev/nvidia-modeset and /dev/nvidia-caps/* which
     # the kernel driver does not create automatically via udev on bare installs.
-    command -v nvidia-modprobe &>/dev/null && nvidia-modprobe -m 2>/dev/null || true
+    if command -v nvidia-modprobe &>/dev/null; then
+        nvidia-modprobe -m 2>/dev/null || true
+    fi
+    ensure_nvidia_device_nodes
 }
 
 # =========================================================================
@@ -546,7 +602,6 @@ services:
       - XDG_RUNTIME_DIR=/tmp/sockets
       - WOLF_CFG_FILE=/etc/wolf/cfg/config.toml
       - WOLF_DOCKER_SOCKET=/var/run/docker.sock
-      - WOLF_PULSE_IMAGE=ghcr.io/games-on-whales/pulseaudio:fedora-43
     volumes:
       - /etc/wolf:/etc/wolf:rw
       - /var/run/docker.sock:/var/run/docker.sock:rw
@@ -610,7 +665,6 @@ services:
       - XDG_RUNTIME_DIR=/tmp/sockets
       - WOLF_CFG_FILE=/etc/wolf/cfg/config.toml
       - WOLF_DOCKER_SOCKET=/var/run/docker.sock
-      - WOLF_PULSE_IMAGE=ghcr.io/games-on-whales/pulseaudio:fedora-43
     volumes:
       - ${wolf_cfg}:/etc/wolf/cfg:rw
       - ${steam}:/etc/wolf/steam:rw

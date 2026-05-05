@@ -150,70 +150,6 @@ detect_nvidia_version() {
     err "Cannot determine NVIDIA driver version. Is the NVIDIA driver installed?"
 }
 
-# Build NVIDIA driver volume. Usage: build_nvidia_volume <docker|podman>
-build_nvidia_volume() {
-    local tool="$1"
-    local -a build_cmd
-
-    [[ -z "${NV_VERSION:-}" ]] && detect_nvidia_version
-    info "NVIDIA driver version: ${NV_VERSION}"
-
-    if "$tool" volume inspect nvidia-driver-vol &>/dev/null; then
-        info "NVIDIA driver volume already exists"
-        return
-    fi
-
-    info "Building NVIDIA driver volume (this may take a few minutes)..."
-    if [[ "$tool" == "docker" ]]; then
-        if ! docker buildx version &>/dev/null; then
-            err "Docker buildx is required to build the NVIDIA driver volume. Install the Docker buildx plugin and rerun the quickstart."
-        fi
-        build_cmd=(docker buildx build --load)
-    else
-        build_cmd=("$tool" build)
-    fi
-
-    "${build_cmd[@]}" -t gow/nvidia-driver:latest -f - \
-            --build-arg "NV_VERSION=${NV_VERSION}" . <<'DOCKERFILE'
-FROM fedora:43 AS nvidia-installer
-
-ARG NV_VERSION
-RUN dnf install -y --setopt=install_weak_deps=False \
-        curl kmod libglvnd-devel pkg-config && \
-    curl -fLO "https://download.nvidia.com/XFree86/Linux-x86_64/${NV_VERSION}/NVIDIA-Linux-x86_64-${NV_VERSION}.run" && \
-    chmod +x "NVIDIA-Linux-x86_64-${NV_VERSION}.run" && \
-    mkdir -p /usr/nvidia && \
-    "./NVIDIA-Linux-x86_64-${NV_VERSION}.run" --silent -z \
-        --skip-depmod --skip-module-unload \
-        --no-nvidia-modprobe --no-kernel-modules --no-kernel-module-source \
-        --opengl-prefix=/usr/nvidia \
-        --wine-prefix=/usr/nvidia \
-        --utility-prefix=/usr/nvidia --utility-libdir=lib \
-        --compat32-prefix=/usr/nvidia --compat32-libdir=lib32 \
-        --egl-external-platform-config-path=/usr/nvidia/share/egl/egl_external_platform.d \
-        --glvnd-egl-config-path=/usr/nvidia/share/glvnd/egl_vendor.d \
-        --no-distro-scripts && \
-    rm "NVIDIA-Linux-x86_64-${NV_VERSION}.run"
-
-RUN printf '/usr/nvidia/lib\n/usr/nvidia/lib32\n' > /etc/ld.so.conf.d/nvidia.conf && ldconfig
-
-FROM scratch
-
-COPY --from=nvidia-installer /usr/nvidia/ /usr/nvidia
-COPY --from=nvidia-installer /etc/vulkan/icd.d/nvidia_icd.json /usr/nvidia/share/vulkan/icd.d/
-COPY --from=nvidia-installer /bin/sh /bin/sh
-DOCKERFILE
-
-    if [[ "$tool" == "podman" ]]; then
-        local tmp_ctr
-        tmp_ctr=$("$tool" create --mount source=nvidia-driver-vol,destination=/usr/nvidia gow/nvidia-driver:latest sh)
-        "$tool" start "$tmp_ctr"
-        "$tool" rm "$tmp_ctr" 2>/dev/null || true
-    else
-        "$tool" create --rm --mount source=nvidia-driver-vol,destination=/usr/nvidia gow/nvidia-driver:latest sh
-    fi
-    info "NVIDIA driver volume created"
-}
 
 # =========================================================================
 # GPU detection and selection
@@ -224,6 +160,15 @@ detect_gpus() {
     GPU_DRIVERS=()
     GPU_VENDORS=()
     GPU_NAMES=()
+
+    # Probe nvidia_drm before scanning so NVIDIA render nodes appear in /sys/class/drm/.
+    # nvidia_drm requires modeset=1 to expose a DRM render device; without this,
+    # NVIDIA GPUs are invisible to the detector even when the driver is installed.
+    if command -v modprobe &>/dev/null && command -v modinfo &>/dev/null \
+            && modinfo nvidia &>/dev/null 2>&1; then
+        modprobe nvidia 2>/dev/null || true
+        modprobe nvidia_drm modeset=1 2>/dev/null || true
+    fi
 
     local node driver vendor name pci_slot device_dir
     for node in /sys/class/drm/renderD*/device/driver; do
@@ -375,6 +320,69 @@ clean_lxc_gpu_config() {
     fi
 }
 
+# Install the NVIDIA kernel driver on the host if an NVIDIA GPU is present but
+# the driver is missing. Safe to call unconditionally — skips when not needed.
+install_nvidia_host_driver() {
+    # Nothing to do if already installed
+    if modinfo nvidia &>/dev/null 2>&1; then
+        info "NVIDIA host driver already installed ($(modinfo nvidia -F version 2>/dev/null || echo unknown))"
+        return
+    fi
+
+    # Only proceed if an NVIDIA display/3D GPU is actually present
+    command -v lspci &>/dev/null || return 0
+    lspci -d "10de:" | grep -qiE "VGA|3D controller|Display controller" || return 0
+
+    info "NVIDIA GPU detected; installing host kernel driver"
+    apt-get update -qq
+    apt-get install -y --no-install-recommends curl pciutils
+
+    # Blacklist nouveau so it doesn't conflict
+    if ! grep -rq "blacklist nouveau" /etc/modprobe.d/ 2>/dev/null; then
+        printf 'blacklist nouveau\noptions nouveau modeset=0\n' \
+            > /etc/modprobe.d/blacklist-nouveau.conf
+        update-initramfs -u 2>/dev/null || true
+    fi
+    rmmod nouveau 2>/dev/null || true
+
+    # Install kernel headers (Proxmox uses proxmox-headers-*, others linux-headers-*)
+    local kernel_ver
+    kernel_ver=$(uname -r)
+    if apt-cache show "proxmox-headers-${kernel_ver}" &>/dev/null 2>&1; then
+        apt-get install -y --no-install-recommends "proxmox-headers-${kernel_ver}"
+    else
+        apt-get install -y --no-install-recommends "linux-headers-${kernel_ver}"
+    fi
+
+    # Resolve latest driver version
+    local nv_version
+    nv_version=$(curl -fsSL \
+        "https://download.nvidia.com/XFree86/Linux-x86_64/latest.txt" \
+        | awk '{print $1; exit}')
+    [[ -n "$nv_version" ]] || err "Could not resolve latest NVIDIA driver version"
+    info "Installing NVIDIA host driver ${nv_version} (with DKMS)"
+
+    local installer="NVIDIA-Linux-x86_64-${nv_version}.run"
+    local installer_path="/tmp/${installer}"
+
+    if [[ ! -f "$installer_path" ]]; then
+        curl -fL -o "$installer_path" \
+            "https://download.nvidia.com/XFree86/Linux-x86_64/${nv_version}/${installer}"
+    fi
+
+    chmod +x "$installer_path"
+    DEBIAN_FRONTEND=noninteractive "$installer_path" \
+        --silent \
+        --dkms \
+        --no-opengl-files \
+        --no-nouveau-check \
+        --no-wine-files \
+        --no-distro-scripts
+
+    rm -f "$installer_path"
+    info "NVIDIA host driver ${nv_version} installed"
+}
+
 install_nvidia_userspace_driver() {
     local nv_version="$1"
 
@@ -407,10 +415,14 @@ install_nvidia_userspace_driver() {
     info "NVIDIA userspace driver ${nv_version} installed"
 }
 
+# Install and configure the NVIDIA Container Toolkit.
+# Usage: install_nvidia_container_toolkit [docker|cdi]
+#   docker (default) — configure Docker to use the NVIDIA runtime.
+#   cdi               — generate a CDI spec (for Podman / CDI-capable runtimes).
 install_nvidia_container_toolkit() {
-    if command -v nvidia-ctk &>/dev/null; then
-        info "NVIDIA Container Toolkit already installed"
-    else
+    local mode="${1:-docker}"
+
+    if ! command -v nvidia-ctk &>/dev/null; then
         info "Installing NVIDIA Container Toolkit"
         curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
             | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
@@ -420,11 +432,22 @@ install_nvidia_container_toolkit() {
         apt-get update -qq
         apt-get install -y --no-install-recommends nvidia-container-toolkit
         info "NVIDIA Container Toolkit installed"
+    else
+        info "NVIDIA Container Toolkit already installed"
     fi
 
-    nvidia-ctk runtime configure --runtime=docker --set-as-default
-    systemctl restart docker
-    info "Docker configured to use NVIDIA runtime"
+    case "$mode" in
+        docker)
+            nvidia-ctk runtime configure --runtime=docker --set-as-default
+            systemctl restart docker
+            info "Docker configured to use NVIDIA runtime"
+            ;;
+        cdi)
+            mkdir -p /etc/cdi
+            nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+            info "NVIDIA CDI spec generated at /etc/cdi/nvidia.yaml"
+            ;;
+    esac
 }
 
 ensure_nvidia_modules_loaded() {

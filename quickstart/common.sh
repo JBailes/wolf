@@ -505,6 +505,12 @@ services:
       - /dev/uhid
     network_mode: host
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /tmp/sockets/wolf.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
 
   wolf-den:
     image: ghcr.io/games-on-whales/wolf-den:stable
@@ -518,7 +524,8 @@ services:
       - "8080:8080"
     restart: unless-stopped
     depends_on:
-      - wolf
+      wolf:
+        condition: service_healthy
 
 volumes:
   wolf-socket:
@@ -554,6 +561,12 @@ services:
       - 'c 13:* rmw'
     network_mode: host
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /tmp/sockets/wolf.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
 
   wolf-den:
     image: ghcr.io/games-on-whales/wolf-den:stable
@@ -567,7 +580,8 @@ services:
       - "8080:8080"
     restart: unless-stopped
     depends_on:
-      - wolf
+      wolf:
+        condition: service_healthy
 
 volumes:
   wolf-socket:
@@ -612,6 +626,12 @@ services:
       - 'c 13:* rmw'
     network_mode: host
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /tmp/sockets/wolf.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
 
   wolf-den:
     image: ghcr.io/games-on-whales/wolf-den:stable
@@ -625,7 +645,8 @@ services:
       - "8080:8080"
     restart: unless-stopped
     depends_on:
-      - wolf
+      wolf:
+        condition: service_healthy
 
 volumes:
   wolf-socket:
@@ -656,6 +677,12 @@ services:
       - /dev/uhid
     network_mode: host
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /tmp/sockets/wolf.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
 
   wolf-den:
     image: ghcr.io/games-on-whales/wolf-den:stable
@@ -669,7 +696,8 @@ services:
       - "8080:8080"
     restart: unless-stopped
     depends_on:
-      - wolf
+      wolf:
+        condition: service_healthy
 
 volumes:
   wolf-socket:
